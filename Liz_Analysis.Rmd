@@ -1,0 +1,184 @@
+---
+title: "Liz's Peak Bloom Prediction"
+author: "Liz Conley"
+date: "2026-02-03"
+output: pdf_document
+lang: en-US
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, error = FALSE, 
+                      message = FALSE,
+                      fig.align = 'center',
+                      out.width = '80%')
+```
+
+
+## Instructions
+
+In this analysis I'll predict the peak bloom date over the next decade for all five locations required by the competition, using #TODO insert method here.
+
+Current method: 
+- ridge regression/lasso/elastic net
+  - probably elastic net, so we can tune the alpha hyper parameter
+
+- additional data (sunlight/UV exposure, rainfall/precipitation)
+  - sunlight data from ([NOAA UV Index](https://www.cpc.ncep.noaa.gov/products/stratosphere/uv_index/uv_annual.shtml))
+  - rainfall data from ([NOAA Quantitative Precipitation Forecasts](https://www.wpc.ncep.noaa.gov/qpf/day1-7.shtml))
+  
+  - build a model off of historic data, as well as this year's data
+  - use k-fold CV to detect over fitting
+  
+  - do a PCA model for max predictive accuracy, in exchange for blackboxing?
+
+For this demo analysis we are using methods from the _tidyverse_ of R packages.
+
+```{r}
+#| eval: false
+install.packages('tidyverse')
+```
+
+
+## Loading the data
+
+The data for the five sites is provided as a simple text file in CSV format.
+Each file contains the dates of the peak bloom of the cherry trees at the respective site, alongside the geographical location of the site.
+
+The six columns in each data file are
+
+* _location_ a human-readable location identifier (`string`).
+* _lat_ (approximate) latitude of the cherry trees (`double`).
+* _long_ (approximate) longitude of the cherry trees (`double`).
+* _alt_ (approximate) altitude of the cherry trees (`double`).
+* _year_ year of the observation (`integer`).
+* *bloom_date* date of peak bloom of the cherry trees (ISO 8601 date `string`). The "peak bloom date" may be defined differently for different sites
+* *bloom_doy* days since January 1st of the year until peak bloom (`integer`). January 1st corresponds to `1`.
+
+In R, the data files can be read with `read.csv()` and concatenated with the `bind_rows()` function:
+
+```{r}
+cherry <- read.csv("data/washingtondc.csv") |> 
+  bind_rows(read.csv("data/liestal.csv")) |> 
+  bind_rows(read.csv("data/kyoto.csv")) |> 
+  bind_rows(read.csv("data/vancouver.csv")) |> 
+  bind_rows(read.csv("data/nyc.csv"))
+```
+
+
+## Loading additional data
+
+We encourage you to find additional publicly-available data that will improve your predictions.
+For example, one source of global meteorological data comes from the Global Historical Climatology Network (GHCN), available through the NOAA web API.
+
+To use the web API, you first need a web service token.
+You can request this token (free of charge) via <https://www.ncdc.noaa.gov/cdo-web/token>.
+Once you have been issued the token, note it somewhere in your code (or make it available through an environment variable):
+```{r}
+#| echo: false
+NOAA_WEB_API_TOKEN <- Sys.getenv("NOAA_WEB_API_TOKEN")
+# requested API token, waiting for the email from NOAA
+```
+
+To connect to and use the web API you may use the following R packages:
+```{r}
+#| eval: false
+install.packages("httr2")
+install.packages("jsonlite")
+```
+
+The stations closest to the sites for the competition with continuously collected maximum temperatures are USC00186350 (Washington D.C.), GME00127786 (Liestal), JA000047759 (Kyoto), CA001108395 (Vancouver) and USW00014732 (New York)
+```{r}
+NOAA_API_BASE_URL <- "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
+
+# Define the station IDs for the specified locations
+stations <- c(
+  "washingtondc" = "GHCND:USW00013743",
+  "vancouver"    = "GHCND:CA001108395",
+  "newyorkcity"  = "GHCND:USW00014732",
+  "liestal"      = "GHCND:SZ000001940",
+  "kyoto"        = "GHCND:JA000047759")
+```
+
+As a simple demonstration, we retrieve the average seasonal maximum daily temperature (in 1/10 °C) from these stations using our own `get_temperature()` function, which wraps the `ghcnd_search()` function in the `rnoaa` package. (N.b. `ghcnd_search()` returns a list. Each element of the list corresponds to an element of the `var` argument.)
+```{r}
+nested_to_tibble <- function (x) {
+  # Determine the variable names in the response
+  variable_names <- map(x, names) |> 
+    unlist(use.names = FALSE) |> 
+    unique()
+  
+  names(variable_names) <- variable_names
+
+  # Reshape the response from a nested list into a table
+  map(variable_names, \(i) {
+    map(x, \(y) {
+      if (is.null(y[[i]])) {
+        NA_character_
+      } else {
+        y[[i]]
+      }
+    }) |> 
+      unlist(use.names = FALSE)
+  }) |> 
+    as_tibble()
+}
+
+get_daily_avg_temp <- function(station_id, start_date, end_date,
+                               api_key, base_url, window_size = 300) {
+  windows <- seq(as_date(start_date),
+                 as_date(end_date) + days(window_size + 1),
+                 by = sprintf("%d days", window_size))
+  
+  batches <- map2(windows[-length(windows)], windows[-1] - days(1), \(from, to) {
+    if (from > Sys.Date()) {
+      return(NULL)
+    }
+    response <- tryCatch(
+      request(base_url) |> 
+        req_headers(token = api_key) |> 
+        req_url_query(
+          datasetid = "GHCND",
+          stationid = station_id,
+          datatypeid = "TAVG,TMAX",
+          startdate = from,
+          enddate = min(as_date(to), Sys.Date()),
+          units = "metric",
+          limit = 1000
+        ) |> 
+        req_retry(max_tries = 10) |> 
+        req_perform() |> 
+        resp_body_json(),
+      
+      httr2_http = \(cnd) {
+        rlang::warn(sprintf("Failed to retrieve data for station %s in time window %s--%s",
+                            station_id, from, to),
+                    parent = cnd)
+        NULL
+      })
+  })
+  
+  map(batches, \(x) nested_to_tibble(x$results)) |> 
+    list_rbind() |> 
+    mutate(date = as_date(date))
+}
+```
+
+For my use case, I want to pull
+- temperature data, with the following parameters:
+  - datasetid = 
+  - stationid = 
+  - datatypeid = 
+  - startdate = 
+  - enddate = 
+  - units = 
+  - limit = 
+```{r}
+
+```
+  
+  
