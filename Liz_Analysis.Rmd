@@ -40,7 +40,8 @@ For this demo analysis we are using methods from the _tidyverse_ of R packages.
 
 ```{r}
 #| eval: false
-install.packages('tidyverse')
+#install.packages('tidyverse')
+library(tidyverse)
 ```
 
 
@@ -80,15 +81,16 @@ You can request this token (free of charge) via <https://www.ncdc.noaa.gov/cdo-w
 Once you have been issued the token, note it somewhere in your code (or make it available through an environment variable):
 ```{r}
 #| echo: false
-NOAA_WEB_API_TOKEN <- Sys.getenv("NOAA_WEB_API_TOKEN")
-# requested API token, waiting for the email from NOAA
+NOAA_WEB_API_TOKEN <- Sys.getenv("TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq")
 ```
 
 To connect to and use the web API you may use the following R packages:
 ```{r}
 #| eval: false
-install.packages("httr2")
-install.packages("jsonlite")
+#install.packages("httr2")
+#install.packages("jsonlite")
+library(httr2)
+library(jsonlite)
 ```
 
 The stations closest to the sites for the competition with continuously collected maximum temperatures are USC00186350 (Washington D.C.), GME00127786 (Liestal), JA000047759 (Kyoto), CA001108395 (Vancouver) and USW00014732 (New York)
@@ -98,10 +100,11 @@ NOAA_API_BASE_URL <- "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
 # Define the station IDs for the specified locations
 stations <- c(
   "washingtondc" = "GHCND:USW00013743",
-  "vancouver"    = "GHCND:CA001108395",
-  "newyorkcity"  = "GHCND:USW00014732",
   "liestal"      = "GHCND:SZ000001940",
-  "kyoto"        = "GHCND:JA000047759")
+  "kyoto"        = "GHCND:JA000047759",
+  "vancouver"    = "GHCND:CA001108395",
+  "newyorkcity"  = "GHCND:USW00014732"
+  )
 ```
 
 As a simple demonstration, we retrieve the average seasonal maximum daily temperature (in 1/10 °C) from these stations using our own `get_temperature()` function, which wraps the `ghcnd_search()` function in the `rnoaa` package. (N.b. `ghcnd_search()` returns a list. Each element of the list corresponds to an element of the `var` argument.)
@@ -168,17 +171,126 @@ get_daily_avg_temp <- function(station_id, start_date, end_date,
 }
 ```
 
-For my use case, I want to pull
-- temperature data, with the following parameters:
-  - datasetid = 
-  - stationid = 
-  - datatypeid = 
-  - startdate = 
-  - enddate = 
-  - units = 
-  - limit = 
+Test case, getting the daily average temperature:
+- in Washington DC (station_id = "GHCND:USW00013743")
+- from Jan 1 2026 (start_date = 2026-01-01) to today (end_date = Sys.Date())
+- with my api key (api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq")
+- with the given base_url (base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
 ```{r}
+DC_Daily_Avg_Temp <- get_daily_avg_temp(station_id = "GHCND:USW00013743",
+                                        start_date = 2026-01-01,
+                                        end_date = Sys.Date(),
+                                        api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                        base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
+
+#got data from July 18, 1975 to today for some reason? Can troubleshoot function, or just filter out only this year's data.
+```
+
+For my use case, I want to pull: 
+- temperature data ("TAVG", "TMAX")
+- precipitation/humidity data ("PRCP", "RHAV")
+- sunlight/cloudiness data ("TSUN", "ACSC")
+
+(And I'd like to get each of these as separate columns, instead of factors in the datatype column.
+```{r}
+get_daily_data <- function(station_id, start_date, end_date,
+                               api_key, base_url, window_size = 300) {
+  windows <- seq(as_date(start_date),
+                 as_date(end_date) + days(window_size + 1),
+                 by = sprintf("%d days", window_size))
+  
+  batches <- map2(windows[-length(windows)], windows[-1] - days(1), \(from, to) {
+    if (from > Sys.Date()) {
+      return(NULL)
+    }
+    response <- tryCatch(
+      request(base_url) |> 
+        req_headers(token = api_key) |> 
+        req_url_query(
+          datasetid = "GHCND",
+          stationid = station_id,
+          datatypeid = "TAVG,TMAX,PRCP,RHAV,TSUN,ACSC",
+          startdate = from,
+          enddate = min(as_date(to), Sys.Date()),
+          units = "metric",
+          limit = 1000
+        ) |> 
+        req_retry(max_tries = 10) |> 
+        req_perform() |> 
+        resp_body_json(),
+      
+      httr2_http = \(cnd) {
+        rlang::warn(sprintf("Failed to retrieve data for station %s in time window %s--%s",
+                            station_id, from, to),
+                    parent = cnd)
+        NULL
+      })
+  })
+  
+  map(batches, \(x) nested_to_tibble(x$results)) |> 
+    list_rbind() |> 
+    mutate(date = as_date(date))
+}
+```
+
+Let's test my version of the function:
+```{r}
+DC_Daily_Data <- get_daily_data(station_id = "GHCND:USW00013743",
+                                        start_date = 2026-01-01,
+                                        end_date = Sys.Date(),
+                                        api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                        base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
+```
+
+# Predicting the peak bloom
+
+One method for predicting peak bloom is using Quetelet's law of the flowering plants. I'll reproduce it here for the cherry blossoms. Used (this article)[https://realworlddatascience.net/applied-insights/tutorials/posts/2023/04/13/flowers.html] to make the code.
+```{r}
+library("knitr")
+#install.packages("kableExtra")
+library("kableExtra")
+library("tidyverse")
+#install.packages("plotly")
+library("plotly")
+#library("rnoaa")
+install.packages("rnpn")
+library("rnpn")
+library("rvest")
+
+doy_last_frost <- function(tmax, doy_max = 100) {
+  dof <- which(tmax[1:doy_max] <= 0)
+  if(length(dof) == 0) 1 else max(dof) + 1
+}
+
+doy_prediction <- function(temp, tmax)
+  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > 4264)
+
+
+DC_Daily_Avg_Temp <- get_daily_avg_temp(station_id = "GHCND:USW00013743",
+                                        start_date = 2025-01-01,
+                                        end_date = 2025-12-31,
+                                        api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                        base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
+
+
+bloom_day_dc <-
+  temp_br %>%
+  summarize(date = doy_prediction(temp, tmax) + as.Date("2023-01-01")) %>%
+  pull(date)
+
+frost_day_dc <- 
+  temp_br %>% 
+  pull(tmax) %>% 
+  doy_last_frost() + as.Date("2023-01-01") 
+
+tibble(`last frost date` = frost_day_dc, 
+       `bloom date` = bloom_day_dc) %>%
+  kable(align = "c",
+        caption = "Last frost date and cherry blossom bloom date in Washington, DC in 2025.") %>%
+  kable_styling()
 
 ```
-  
-  
+
+Modifications from Quetelet's method:
+1) Predict a more accurate cumulative square bloom temp. using historical data.
+2) Use Modified Growing Degree Days (MGDDs) instead of days from last frost?
