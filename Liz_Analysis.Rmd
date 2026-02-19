@@ -35,6 +35,13 @@ Current method:
   - use k-fold CV to detect over fitting
   
   - do a PCA model for max predictive accuracy, in exchange for blackboxing?
+  
+  
+TODO:
+- replicate Quetelet's method using cherry blossom data from ghcnd.
+- predict a more accurate Temperature^2 threshold using historical data (linear regression or lasso/EN?)
+  - use growing degree days or modified growing degree days instead of day from last frost? (research)
+  - generalize a threshold value for precipitation/humidity and/or sunlight/cloudiness?
 
 For this demo analysis we are using methods from the _tidyverse_ of R packages.
 
@@ -252,10 +259,23 @@ library("kableExtra")
 library("tidyverse")
 #install.packages("plotly")
 library("plotly")
-#library("rnoaa")
-install.packages("rnpn")
+#install.packages('rnoaa', repos = c('https://ropensci.r-universe.dev', 'https://cloud.r-project.org'))
+library("rnoaa")
+#install.packages("rnpn")
 library("rnpn")
 library("rvest")
+
+temp_dc <- 
+  ghcnd_search(stationid = "USW00013743",
+               var = c("tmax", "tmin"),
+               date_min = "2025-01-01",
+               date_max = "2025-12-31") %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2)
 
 doy_last_frost <- function(tmax, doy_max = 100) {
   dof <- which(tmax[1:doy_max] <= 0)
@@ -266,22 +286,15 @@ doy_prediction <- function(temp, tmax)
   doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > 4264)
 
 
-DC_Daily_Avg_Temp <- get_daily_avg_temp(station_id = "GHCND:USW00013743",
-                                        start_date = 2025-01-01,
-                                        end_date = 2025-12-31,
-                                        api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                        base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-
-
 bloom_day_dc <-
-  temp_br %>%
-  summarize(date = doy_prediction(temp, tmax) + as.Date("2023-01-01")) %>%
+  temp_dc %>%
+  summarize(date = doy_prediction(temp, tmax) + as.Date("2025-01-01")) %>%
   pull(date)
 
 frost_day_dc <- 
-  temp_br %>% 
+  temp_dc %>% 
   pull(tmax) %>% 
-  doy_last_frost() + as.Date("2023-01-01") 
+  doy_last_frost() + as.Date("2025-01-01") 
 
 tibble(`last frost date` = frost_day_dc, 
        `bloom date` = bloom_day_dc) %>%
@@ -292,5 +305,131 @@ tibble(`last frost date` = frost_day_dc,
 ```
 
 Modifications from Quetelet's method:
-1) Predict a more accurate cumulative square bloom temp. using historical data.
+1) Predict a more accurate cumulative square bloom temp. from historical data using LASSO/EN.
 2) Use Modified Growing Degree Days (MGDDs) instead of days from last frost?
+
+
+#Predicting a more accurate square temperature threshold
+```{r}
+library(caret)
+library(glmnet)
+
+#Step 1: get bloom date for each year
+cherry_dc <- read.csv("data/washingtondc.csv") #bloom_date & bloom_doy in DC 1921-2024
+
+#step 2: get daily temperature data for each year
+temp_dc <- 
+  ghcnd_search(stationid = "USW00013743",
+               var = c("tmax", "tmin"),
+               date_min = "1921-01-01",
+               date_max = "2024-12-31") %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2)
+# only has data from start of 1942
+```
+
+```{r}
+#Step 3: calculate sum square temperature at bloom date of each year
+
+#Let's try this for just 1942
+temp_1942 <- temp_dc %>%
+  filter(year == 1942)
+
+bloom_doy_1942 <- cherry_dc %>%
+  select(location, year, bloom_date, bloom_doy) %>% filter(year == 1942)
+
+bloom_date_1942 <- cherry_dc %>%
+  select(location, year, bloom_date, bloom_doy) %>% filter(year == 1942)
+
+frost_doy_1942 <- 
+  temp_1942 %>% 
+  pull(tmax) %>% 
+  doy_last_frost()
+
+#is DOY zero or one based? I.e. is Jan. 1 DOY 0 or DOY 1?
+#if Jan. 1 is DOY 0, origin = year-01-01
+#if Jan. 1 is DOY 1, origin = (year-1)-12-31
+doy_to_date <- function(doy, year) {
+  origin <- paste(as.character(year), "01-01", sep = "-")
+  date <- as_date(doy, origin)
+}
+
+frost_date_1942 <- 
+  doy_to_date(frost_doy_1942, 1942)
+
+bloom_date_1942 <-
+  as_date(bloom_date_1942$bloom_date)
+
+
+bloom_threshold_temperatures_1942 <- temp_dc %>%
+  filter(year == 1942) %>%
+  filter(between(date, frost_date_1942, bloom_date_1942))
+
+bloom_thresh_temp_sum_sq <-
+  sum(bloom_threshold_temperatures_1942$temp)^2
+  
+```
+
+#All-in-1 function to get bloom temp threshold by year & location
+```{r}
+cherry <- read.csv("data/washingtondc.csv") |> 
+  bind_rows(read.csv("data/liestal.csv")) |> 
+  bind_rows(read.csv("data/kyoto.csv")) |> 
+  bind_rows(read.csv("data/vancouver.csv")) |> 
+  bind_rows(read.csv("data/nyc.csv"))
+
+#parameters:
+# year as a vector (even if it's just 1 year
+# location as one of: "washingtondc", "liestal", "kyoto", "vancouver", "newyorkcity"
+# stID as the corresponding station ID: "USC00186350" (Washington D.C.), "GME00127786" (Liestal), "JA000047759" (Kyoto), "CA001108395" (Vancouver) and "USW00014732" (New York)
+
+bloom_temp_thresh <- function(yr, loc, stID) {
+  cherry_thresh <- cherry %>% filter(location == loc) %>% filter(year %in% yr)
+  
+  cherry_temps <- ghcnd_search(stationid = stID,
+               var = c("tmax", "tmin"),
+               date_min = paste(as.character(min(yr)), "01-01", sep = "-"),
+               date_max = paste(as.character(max(yr)), "12-31", sep = "-")) %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2)
+}
+
+
+# todo, make it work with multiple inputs
+cherry_thresh <- cherry %>% filter(location == c("washingtondc", "kyoto")) %>% filter(year %in% c(1942:1948))
+
+cherry_temps <- ghcnd_search(stationid = c("USW00013743", "JA000047759"),
+               var = c("tmax", "tmin"),
+               date_min = paste(as.character(min(c(1942:1948))), "01-01", sep = "-"),
+               date_max = paste(as.character(max(c(1942:1948))), "12-31", sep = "-")) %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2)
+
+
+```
+
+
+```{r}
+#LASSO
+set.seed(8675309)
+cv_5 = trainControl(method = "cv", number = 5)
+
+threshold_elnet = train(
+  #Salary ~ ., data = Hitters,
+  method = "glmnet",
+  trControl = cv_5
+)
+```
+
