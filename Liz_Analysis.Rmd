@@ -38,7 +38,6 @@ Current method:
   
   
 TODO:
-- replicate Quetelet's method using cherry blossom data from ghcnd.
 - predict a more accurate Temperature^2 threshold using historical data (linear regression or lasso/EN?)
   - use growing degree days or modified growing degree days instead of day from last frost? (research)
   - generalize a threshold value for precipitation/humidity and/or sunlight/cloudiness?
@@ -100,7 +99,14 @@ library(httr2)
 library(jsonlite)
 ```
 
-The stations closest to the sites for the competition with continuously collected maximum temperatures are USC00186350 (Washington D.C.), GME00127786 (Liestal), JA000047759 (Kyoto), CA001108395 (Vancouver) and USW00014732 (New York)
+The stations closest to the sites for the competition with continuously collected maximum temperatures are USC00186350 (Washington D.C.), GME00127786 (Liestal), JA000047759 (Kyoto), CA001108395 (Vancouver) and USW00014732 (New York).
+
+Periods of record:
+DC: 1936-09-01 to 2026-02-17
+Liestal: 1901-01-01 to 2026-01-31
+Kyoto: 1945-10-31 to 2026-02-01
+Vancuover: 1957-01-06 to 2025-08-24
+New York: 1939-10-07 to 2026-02-17
 ```{r}
 NOAA_API_BASE_URL <- "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
 
@@ -184,14 +190,37 @@ Test case, getting the daily average temperature:
 - with my api key (api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq")
 - with the given base_url (base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
 ```{r}
-DC_Daily_Avg_Temp <- get_daily_avg_temp(station_id = "GHCND:USW00013743",
-                                        start_date = 2026-01-01,
+temperature_DC <- get_daily_avg_temp(station_id = "GHCND:USW00013743",
+                                        start_date = "2026-01-01",
                                         end_date = Sys.Date(),
                                         api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
                                         base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
 
-#got data from July 18, 1975 to today for some reason? Can troubleshoot function, or just filter out only this year's data.
+temperature_liestal <- get_daily_avg_temp(station_id = "GHCND:SZ000001940",
+                                  start_date = "2026-01-01",
+                                  end_date = Sys.Date(),
+                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
+
+temperature_kyoto <- get_daily_avg_temp(station_id = "GHCND:JA000047759",
+                                  start_date = "2026-01-01",
+                                  end_date = Sys.Date(),
+                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
+
+temperature_vancouver <- get_daily_avg_temp(station_id = "GHCND:CA001108395",
+                                  start_date = "2026-01-01",
+                                  end_date = Sys.Date(),
+                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
+
+temperature_newyorkcity <- get_daily_avg_temp(station_id = "GHCND:USW00014732",
+                                  start_date = "2026-01-01",
+                                  end_date = Sys.Date(),
+                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
+                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
 ```
+
 
 For my use case, I want to pull: 
 - temperature data ("TAVG", "TMAX")
@@ -249,7 +278,7 @@ DC_Daily_Data <- get_daily_data(station_id = "GHCND:USW00013743",
                                         base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
 ```
 
-# Predicting the peak bloom
+# Predicting the peak bloom using Quetelet's law
 
 One method for predicting peak bloom is using Quetelet's law of the flowering plants. I'll reproduce it here for the cherry blossoms. Used (this article)[https://realworlddatascience.net/applied-insights/tutorials/posts/2023/04/13/flowers.html] to make the code.
 ```{r}
@@ -264,161 +293,129 @@ library("rnoaa")
 #install.packages("rnpn")
 library("rnpn")
 library("rvest")
+```
 
-temp_dc <- 
-  ghcnd_search(stationid = "USW00013743",
-               var = c("tmax", "tmin"),
-               date_min = "2025-01-01",
-               date_max = "2025-12-31") %>%
-  reduce(left_join) %>%
-  transmute(year = parse_number(format(date, "%Y")), 
-            date, 
-            tmax = tmax / 10, 
-            tmin = tmin / 10, 
-            temp = (tmax + tmin) / 2)
-
+```{r}
+#function to get a year's last frost date, in DOY
 doy_last_frost <- function(tmax, doy_max = 100) {
   dof <- which(tmax[1:doy_max] <= 0)
   if(length(dof) == 0) 1 else max(dof) + 1
 }
 
-doy_prediction <- function(temp, tmax)
-  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > 4264)
+#Function to predict a year's bloom date, in DOY
+doy_prediction <- function(temp, tmax, law)
+  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
 
+#Function to get each year's data (temperature data, bloom_date & bloom_doy, law value, and predicted bloom date) for a given location, station, and range of years. The location and station are also recorded.
+#Law value here is the cumulative temperature (in °C²) from the year's last frost date to it's bloom date.
+quetelet_get_data <- function(loc, ID, startDate, endDate) {
+  Q_temp <- 
+  ghcnd_search(stationid = ID,
+               var = c("tmax", "tmin"),
+               date_min = startDate,
+               date_max = endDate) %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2) %>% 
+  drop_na()
 
-bloom_day_dc <-
-  temp_dc %>%
-  summarize(date = doy_prediction(temp, tmax) + as.Date("2025-01-01")) %>%
-  pull(date)
+Q_bloom <-
+  cherry %>% filter(location == loc) %>% select(year, bloom_date, bloom_doy) %>%
+  drop_na()
 
-frost_day_dc <- 
-  temp_dc %>% 
-  pull(tmax) %>% 
-  doy_last_frost() + as.Date("2025-01-01") 
+minYear <- max(c(min(Q_temp$year), min(Q_bloom$year)))
+maxYear <- min(c(max(Q_temp$year), max(Q_bloom$year)))
 
-tibble(`last frost date` = frost_day_dc, 
-       `bloom date` = bloom_day_dc) %>%
-  kable(align = "c",
-        caption = "Last frost date and cherry blossom bloom date in Washington, DC in 2025.") %>%
-  kable_styling()
+Q_temp <- Q_temp %>% filter(year > minYear & year <= maxYear)
+Q_bloom <- Q_bloom %>% filter(year > minYear & year <= maxYear)
 
+quetelet <- 
+  Q_temp %>% 
+  group_by(year) %>% 
+  nest() %>% 
+  left_join(Q_bloom) %>% 
+  mutate(law = map(data, ~ sum(pmax(.$temp, 0, na.rm = TRUE)[(doy_last_frost(.$tmax) + 1):bloom_doy]^2))) %>% 
+  unnest(law) %>% 
+  ungroup() %>%
+  mutate(pred_bloom_doy = map(data, ~ doy_prediction(.$temp, .$tmax, mean(quetelet_dc$law)))) %>% 
+  unnest(pred_bloom_doy) %>% 
+  ungroup() %>%
+  mutate(location = loc) %>%
+  mutate(stationID = ID)
+}
 ```
+
+
+```{r}
+quetelet_dc <- quetelet_get_data("washingtondc", "USW00013743", "1936-09-01", Sys.Date())
+quetelet_liestal <- quetelet_get_data("liestal", "SZ000001940", "1901-01-01", Sys.Date())
+quetelet_kyoto <- quetelet_get_data("kyoto", "JA000047759", "1945-10-31", Sys.Date())
+quetelet_vancouver <- quetelet_get_data("vancouver", "CA001108395", "1957-01-06", Sys.Date())
+quetelet_newyorkcity <- quetelet_get_data("newyorkcity", "USW00014732", "1901-01-01", Sys.Date())
+```
+
+
+```{r}
+quetelet_analyze <- function(Qdata){
+  Qdata %>%
+    summarize(est = mean(law), 
+            se = sd(law)/sqrt(n()),
+            ci  = str_c("[", round(est - 2 * se), ", ", round(est + 2 * se), "]")) %>%
+  kable(dig = 0, 
+        align = "c", 
+        col.names = c("estimate (°C²)", 
+                      "standard error (°C²)", "95% confidence interval (°C²)"),
+        caption = "Estimate of Quetelet's law.") %>%
+  kable_styling()
+}
+
+
+
+quetelet_evaluate <- function(Qdata){
+  Qdata %>%
+    summarize(mae  = mean(abs(bloom_doy - pred_bloom_doy)),
+            rmse = sqrt(mean((bloom_doy - pred_bloom_doy)^2))) %>%
+  kable(dig = 0,
+        align = "c",
+        col.names = c("mean absolute error (days)", "root mean squared error (days)"),
+        caption = "Accuracy of predictions using Quetelet's law.") %>%
+  kable_styling()
+}
+```
+
+```{r}
+quetelet_analyze(quetelet_dc)
+quetelet_evaluate(quetelet_dc)
+```
+```{r}
+quetelet_analyze(quetelet_liestal)
+quetelet_predict(quetelet_liestal)
+```
+```{r}
+quetelet_analyze(quetelet_kyoto)
+quetelet_predict(quetelet_kyoto)
+```
+```{r}
+quetelet_analyze(quetelet_vancouver)
+quetelet_predict(quetelet_vancouver)
+```
+```{r}
+quetelet_analyze(quetelet_newyorkcity)
+quetelet_predict(quetelet_newyorkcitych)
+```
+
+```{r}
+#need to predict this year's bloom date using weather forecast data
+#quetelet_predict_2026 <- function(Qdata, )
+```
+
 
 Modifications from Quetelet's method:
-1) Predict a more accurate cumulative square bloom temp. from historical data using LASSO/EN.
-2) Use Modified Growing Degree Days (MGDDs) instead of days from last frost?
+1) Predict a year's law value using lasso/elastic net. Then, using weather forecasts, predict what day this year will reach that law value.
 
-
-#Predicting a more accurate square temperature threshold
-```{r}
-library(caret)
-library(glmnet)
-
-#Step 1: get bloom date for each year
-cherry_dc <- read.csv("data/washingtondc.csv") #bloom_date & bloom_doy in DC 1921-2024
-
-#step 2: get daily temperature data for each year
-temp_dc <- 
-  ghcnd_search(stationid = "USW00013743",
-               var = c("tmax", "tmin"),
-               date_min = "1921-01-01",
-               date_max = "2024-12-31") %>%
-  reduce(left_join) %>%
-  transmute(year = parse_number(format(date, "%Y")), 
-            date, 
-            tmax = tmax / 10, 
-            tmin = tmin / 10, 
-            temp = (tmax + tmin) / 2)
-# only has data from start of 1942
-```
-
-```{r}
-#Step 3: calculate sum square temperature at bloom date of each year
-
-#Let's try this for just 1942
-temp_1942 <- temp_dc %>%
-  filter(year == 1942)
-
-bloom_doy_1942 <- cherry_dc %>%
-  select(location, year, bloom_date, bloom_doy) %>% filter(year == 1942)
-
-bloom_date_1942 <- cherry_dc %>%
-  select(location, year, bloom_date, bloom_doy) %>% filter(year == 1942)
-
-frost_doy_1942 <- 
-  temp_1942 %>% 
-  pull(tmax) %>% 
-  doy_last_frost()
-
-#is DOY zero or one based? I.e. is Jan. 1 DOY 0 or DOY 1?
-#if Jan. 1 is DOY 0, origin = year-01-01
-#if Jan. 1 is DOY 1, origin = (year-1)-12-31
-doy_to_date <- function(doy, year) {
-  origin <- paste(as.character(year), "01-01", sep = "-")
-  date <- as_date(doy, origin)
-}
-
-frost_date_1942 <- 
-  doy_to_date(frost_doy_1942, 1942)
-
-bloom_date_1942 <-
-  as_date(bloom_date_1942$bloom_date)
-
-
-bloom_threshold_temperatures_1942 <- temp_dc %>%
-  filter(year == 1942) %>%
-  filter(between(date, frost_date_1942, bloom_date_1942))
-
-bloom_thresh_temp_sum_sq <-
-  sum(bloom_threshold_temperatures_1942$temp)^2
-  
-```
-
-#All-in-1 function to get bloom temp threshold by year & location
-```{r}
-cherry <- read.csv("data/washingtondc.csv") |> 
-  bind_rows(read.csv("data/liestal.csv")) |> 
-  bind_rows(read.csv("data/kyoto.csv")) |> 
-  bind_rows(read.csv("data/vancouver.csv")) |> 
-  bind_rows(read.csv("data/nyc.csv"))
-
-#parameters:
-# year as a vector (even if it's just 1 year
-# location as one of: "washingtondc", "liestal", "kyoto", "vancouver", "newyorkcity"
-# stID as the corresponding station ID: "USC00186350" (Washington D.C.), "GME00127786" (Liestal), "JA000047759" (Kyoto), "CA001108395" (Vancouver) and "USW00014732" (New York)
-
-bloom_temp_thresh <- function(yr, loc, stID) {
-  cherry_thresh <- cherry %>% filter(location == loc) %>% filter(year %in% yr)
-  
-  cherry_temps <- ghcnd_search(stationid = stID,
-               var = c("tmax", "tmin"),
-               date_min = paste(as.character(min(yr)), "01-01", sep = "-"),
-               date_max = paste(as.character(max(yr)), "12-31", sep = "-")) %>%
-  reduce(left_join) %>%
-  transmute(year = parse_number(format(date, "%Y")), 
-            date, 
-            tmax = tmax / 10, 
-            tmin = tmin / 10, 
-            temp = (tmax + tmin) / 2)
-}
-
-
-# todo, make it work with multiple inputs
-cherry_thresh <- cherry %>% filter(location == c("washingtondc", "kyoto")) %>% filter(year %in% c(1942:1948))
-
-cherry_temps <- ghcnd_search(stationid = c("USW00013743", "JA000047759"),
-               var = c("tmax", "tmin"),
-               date_min = paste(as.character(min(c(1942:1948))), "01-01", sep = "-"),
-               date_max = paste(as.character(max(c(1942:1948))), "12-31", sep = "-")) %>%
-  reduce(left_join) %>%
-  transmute(year = parse_number(format(date, "%Y")), 
-            date, 
-            tmax = tmax / 10, 
-            tmin = tmin / 10, 
-            temp = (tmax + tmin) / 2)
-
-
-```
 
 
 ```{r}
