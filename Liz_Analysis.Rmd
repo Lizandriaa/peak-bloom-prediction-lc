@@ -184,99 +184,6 @@ get_daily_avg_temp <- function(station_id, start_date, end_date,
 }
 ```
 
-Test case, getting the daily average temperature:
-- in Washington DC (station_id = "GHCND:USW00013743")
-- from Jan 1 2026 (start_date = 2026-01-01) to today (end_date = Sys.Date())
-- with my api key (api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq")
-- with the given base_url (base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-```{r}
-temperature_DC <- get_daily_avg_temp(station_id = "GHCND:USW00013743",
-                                        start_date = "2026-01-01",
-                                        end_date = Sys.Date(),
-                                        api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                        base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-
-temperature_liestal <- get_daily_avg_temp(station_id = "GHCND:SZ000001940",
-                                  start_date = "2026-01-01",
-                                  end_date = Sys.Date(),
-                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-
-temperature_kyoto <- get_daily_avg_temp(station_id = "GHCND:JA000047759",
-                                  start_date = "2026-01-01",
-                                  end_date = Sys.Date(),
-                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-
-temperature_vancouver <- get_daily_avg_temp(station_id = "GHCND:CA001108395",
-                                  start_date = "2026-01-01",
-                                  end_date = Sys.Date(),
-                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-
-temperature_newyorkcity <- get_daily_avg_temp(station_id = "GHCND:USW00014732",
-                                  start_date = "2026-01-01",
-                                  end_date = Sys.Date(),
-                                  api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                  base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-```
-
-
-For my use case, I want to pull: 
-- temperature data ("TAVG", "TMAX")
-- precipitation/humidity data ("PRCP", "RHAV")
-- sunlight/cloudiness data ("TSUN", "ACSC")
-
-(And I'd like to get each of these as separate columns, instead of factors in the datatype column.
-```{r}
-get_daily_data <- function(station_id, start_date, end_date,
-                               api_key, base_url, window_size = 300) {
-  windows <- seq(as_date(start_date),
-                 as_date(end_date) + days(window_size + 1),
-                 by = sprintf("%d days", window_size))
-  
-  batches <- map2(windows[-length(windows)], windows[-1] - days(1), \(from, to) {
-    if (from > Sys.Date()) {
-      return(NULL)
-    }
-    response <- tryCatch(
-      request(base_url) |> 
-        req_headers(token = api_key) |> 
-        req_url_query(
-          datasetid = "GHCND",
-          stationid = station_id,
-          datatypeid = "TAVG,TMAX,PRCP,RHAV,TSUN,ACSC",
-          startdate = from,
-          enddate = min(as_date(to), Sys.Date()),
-          units = "metric",
-          limit = 1000
-        ) |> 
-        req_retry(max_tries = 10) |> 
-        req_perform() |> 
-        resp_body_json(),
-      
-      httr2_http = \(cnd) {
-        rlang::warn(sprintf("Failed to retrieve data for station %s in time window %s--%s",
-                            station_id, from, to),
-                    parent = cnd)
-        NULL
-      })
-  })
-  
-  map(batches, \(x) nested_to_tibble(x$results)) |> 
-    list_rbind() |> 
-    mutate(date = as_date(date))
-}
-```
-
-Let's test my version of the function:
-```{r}
-DC_Daily_Data <- get_daily_data(station_id = "GHCND:USW00013743",
-                                        start_date = 2026-01-01,
-                                        end_date = Sys.Date(),
-                                        api_key = "TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq",
-                                        base_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data")
-```
 
 # Predicting the peak bloom using Quetelet's law
 
@@ -339,8 +246,10 @@ quetelet <-
   left_join(Q_bloom) %>% 
   mutate(law = map(data, ~ sum(pmax(.$temp, 0, na.rm = TRUE)[(doy_last_frost(.$tmax) + 1):bloom_doy]^2))) %>% 
   unnest(law) %>% 
-  ungroup() %>%
-  mutate(pred_bloom_doy = map(data, ~ doy_prediction(.$temp, .$tmax, mean(quetelet_dc$law)))) %>% 
+  ungroup() 
+
+quetelet <- quetelet %>%
+  mutate(pred_bloom_doy = map(data, ~ doy_prediction(.$temp, .$tmax, mean(quetelet$law)))) %>% 
   unnest(pred_bloom_doy) %>% 
   ungroup() %>%
   mutate(location = loc) %>%
@@ -392,41 +301,199 @@ quetelet_evaluate(quetelet_dc)
 ```
 ```{r}
 quetelet_analyze(quetelet_liestal)
-quetelet_predict(quetelet_liestal)
+quetelet_evaluate(quetelet_liestal)
 ```
 ```{r}
 quetelet_analyze(quetelet_kyoto)
-quetelet_predict(quetelet_kyoto)
+quetelet_evaluate(quetelet_kyoto)
 ```
 ```{r}
 quetelet_analyze(quetelet_vancouver)
-quetelet_predict(quetelet_vancouver)
+quetelet_evaluate(quetelet_vancouver)
 ```
 ```{r}
 quetelet_analyze(quetelet_newyorkcity)
-quetelet_predict(quetelet_newyorkcitych)
+quetelet_evaluate(quetelet_newyorkcity)
+```
+
+#To predict the bloom date in 2026, we'll need temperature predictions for the rest of the year. I'll use AccuWeather's predictions (haven't been able to get them all yet)
+```{r}
+#This draws from work by David Keplinger, link: https://dkepplinger.org/cherry/chatgpt_entry-2025.html
+#It unfortunately relies on archived AccuWeather data, which is spotty for 2026 :/
+get_weather_table <- function(url)
+  read_html(url) %>% 
+  html_nodes("div.monthly-calendar") %>% 
+  html_text2() %>%
+  str_replace("N/A", "N/A N/A") %>%
+  str_remove_all("°|Hist. Avg. ") %>%
+  str_split(" ", simplify = TRUE) %>%
+  parse_number() %>%
+  matrix(ncol = 3, 
+         byrow = TRUE,
+         dimnames = list(NULL, c("day", "tmax", "tmin"))) %>%
+  as_tibble() %>%
+  filter(
+    row_number() %in%
+      (which(diff(day) < 0) %>% (function(x) if(length(x) == 1) seq(1, x[1], 1) else seq(x[1] + 1, x[2], 1))))
+```
+
+```{r}
+DC_AccuWeather <- get_weather_table("https://web.archive.org/web/20250927134342/https://www.accuweather.com/en/us/washington/20006")
+#Error in open.connection(x, "rb") : cannot open the connection
+```
+
+#currently have data from 02/19/26 to 02/28/26. Need out till at least predicted bloom date, say day 151 of the year, i.e. 5/31/26, to be safe? Lot to enter by hand, need to find some way to scrape it. 
+#TODO: get predicted temperature data
+```{r}
+AccuWeather_26_dc <- data.frame(
+  year = year <- rep(2026, times = 10),
+  date = date <- seq(as.Date("2026-02-19"), as.Date("2026-02-28"), "days"),
+  tmax = tmax <- c(7, 12, 13, 3, 4, 3, 9, 14, 10, 16, 16, 9, 9, 10, ),
+  tmin = tmin <- c(2, 4, 2, 1, -3, -4, 6, 1, 1, 4),
+  temp = temp <- (tmax + tmin) / 2
+)
+#https://www.accuweather.com/en/us/washington/20006/february-weather/327659
+
+AccuWeather_26_liestal <- data.frame(
+  year = year <- rep(2026, times = 10),
+  date = date <- seq(as.Date("2026-02-19"), as.Date("2026-02-28"), "days"),
+  tmax = tmax <- c(10, 12.5, 9, 12, 12, 15, 16, 14, 13, 12),
+  tmin = tmin <- c(4, 5.7, 6, 7, 7, 6, 5, 7, 6, 4),
+  temp = temp <- (tmax + tmin) / 2
+)
+#https://www.accuweather.com/en/ch/liestal/311994/weather-forecast/311994
+#had to interpolate the data for 2/20/26, just took the average of the rest of observations
+
+AccuWeather_26_kyoto <- data.frame(
+  year = year <- rep(2026, times = 10),
+  date = date <- seq(as.Date("2026-02-19"), as.Date("2026-02-28"), "days"),
+  tmax = tmax <- c(8, 15.7, 17, 21, 16, 16, 12, 17, 18, 17),
+  tmin = tmin <- c(1, 6.2, 3, 9, 2, 10, 6, 8, 10, 7),
+  temp = temp <- (tmax + tmin) / 2
+)
+#https://www.accuweather.com/en/jp/kyoto-shi/2-224436_1_al/weather-forecast/2-224436_1_al?city=kyoto
+#had to interpolate the data for 2/20/26, just took the average of the rest of observations
+
+AccuWeather_26_vancouver <- data.frame(
+  year = year <- rep(2026, times = 10),
+  date = date <- seq(as.Date("2026-02-19"), as.Date("2026-02-28"), "days"),
+  tmax = tmax <- c(4, 4, 7, 9, 9, 8, 10, 11, 9, 9),
+  tmin = tmin <- c(-1, 3, 5, 6, 5, 3, 5, 5, 3, 2),
+  temp = temp <- (tmax + tmin) / 2
+)
+#https://www.accuweather.com/en/ca/vancouver/v6c/february-weather/53286
+  
+AccuWeather_26_newyorkcity <- data.frame(
+  year = year <- rep(2026, times = 10),
+  date = date <- seq(as.Date("2026-02-19"), as.Date("2026-02-28"), "days"),
+  tmax = tmax <- c(6, 2, 9, 3, 3, 1, 5, 6, 7, 11),
+  tmin = tmin <- c(2, 2, 3, -1, -2, -3, 2, 1, 1, 3),
+  temp = temp <- (tmax + tmin) / 2
+)
+#https://www.accuweather.com/en/us/new-york/10021/february-weather/14-349727_1_al
 ```
 
 ```{r}
 #need to predict this year's bloom date using weather forecast data
-#quetelet_predict_2026 <- function(Qdata, )
+quetelet_get_2026 <- function(loc, ID, estLaw){
+  #get the temperature data for all the days of this year that've happened so far
+  Q_temp_26 <-
+  ghcnd_search(stationid = ID,
+               var = c("tmax", "tmin"),
+               date_min = as_date("2026-01-01"),
+               date_max = Sys.Date()) %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2) %>% 
+  drop_na()
+  
+  #add the predicted data from AccuWeather (from date of collection (2/20/2026) to 2/28)
+  if (loc == "washingtondc"){
+    AccuWeather_26 <- AccuWeather_26_dc
+  }
+  else if (loc == "liestal"){
+    AccuWeather_26 <- AccuWeather_26_liestal
+  }
+  else if (loc == "kyoto") {
+    AccuWeather_26 <- AccuWeather_26_kyoto
+  }
+  else if (loc == "vancouver"){
+    AccuWeather_26 <- AccuWeather_26_vancouver
+  }
+  else if (loc == "newyorkcity"){
+    AccuWeather_26 <- AccuWeather_26_newyorkcity
+  }
+  AccuWeather_26 <- filter(date > max(Q_temp_26$date))
+  
+  Q_temp_26 <- bind_rows(Q_temp_26, AccuWeather_26)
+  
+  #formatting
+  Q_bloom_26 <-
+  cherry %>% filter(location == loc) %>% select(year, bloom_date, bloom_doy) %>%
+  drop_na()
+  
+  #more formatting
+  quetelet_26 <- 
+  Q_temp_26 %>% 
+  group_by(year) %>% 
+  nest() %>% 
+  left_join(Q_bloom_26) %>% 
+  mutate(law = estLaw) %>% 
+  unnest(law) %>% 
+  ungroup() 
+
+  #predict the bloom date
+  quetelet_26 <- quetelet_26 %>%
+    mutate(pred_bloom_doy = map(data, ~ doy_prediction(.$temp, .$tmax, estLaw))) %>% 
+    unnest(pred_bloom_doy) %>% 
+    ungroup() %>%
+    mutate(location = loc) %>%
+    mutate(stationID = ID)
+}
+```
+#TODO: make predictions for 2026
+```{r}
+Qdata_2026_dc <- quetelet_get_2026("washingtondc", "USW00013743", 4101)
 ```
 
 
-Modifications from Quetelet's method:
-1) Predict a year's law value using lasso/elastic net. Then, using weather forecasts, predict what day this year will reach that law value.
-
-
+#Modifications from Quetelet's method:
+1) Predict an area's law value using ridge/lasso/elastic net. Then, using weather forecasts, predict what day this year will reach that law value.
 
 ```{r}
-#LASSO
-set.seed(8675309)
-cv_5 = trainControl(method = "cv", number = 5)
+#Ridge
+library(dplyr)
+library(glmnet)
 
-threshold_elnet = train(
-  #Salary ~ ., data = Hitters,
-  method = "glmnet",
-  trControl = cv_5
-)
+set.seed(8675309)
+#getting data & buildig model
+x <- data.matrix(quetelet_dc[, c("year", "bloom_date", "bloom_doy")])
+#y <- quetelet_dc[, "law"] creating a dataframe instead of a list for some reason?
+y <- quetelet_dc$law #this fixes it
+lambda_seq <- 10^seq(2, -2, by = -.1)
+fit <- glmnet(x, y, alpha = 0, lambda = lambda_seq)
+summary(fit)
+
+# Using cross validation glmnet
+ridge_cv <- cv.glmnet(x, y, alpha = 0, lambda = lambda_seq)
+best_lambda <- ridge_cv$lambda.min
+best_lambda
+plot(ridge_cv) # :(
+
+best_fit <- ridge_cv$glmnet.fit
+head(best_fit)
+
+best_ridge <- glmnet(x, y, alpha = 0, lambda = best_lambda)
+coef(best_ridge)
+
+y_pred <- predict(best_ridge, s = best_lambda, newx = x)
+
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_pred - y)^2)
+rsq <- 1 - sse/sst
+rsq
 ```
 
