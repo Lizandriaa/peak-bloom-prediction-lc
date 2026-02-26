@@ -1,0 +1,230 @@
+---
+title: "Liz_Analysis_2"
+author: "Liz Conley"
+date: "2026-02-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load the required libraries
+```{r}
+library(tidyverse)
+library(httr2)
+library(jsonlite)
+library("knitr")
+#install.packages("kableExtra")
+library("kableExtra")
+library("tidyverse")
+#install.packages("plotly")
+library("plotly")
+#install.packages('rnoaa', repos = c('https://ropensci.r-universe.dev', 'https://cloud.r-project.org'))
+library("rnoaa")
+#install.packages("rnpn")
+library("rnpn")
+library("rvest")
+```
+
+#Load the provided Historical Bloom Date Data into the cherry dataset
+```{r}
+cherry <- read.csv("data/washingtondc.csv") |> 
+  bind_rows(read.csv("data/liestal.csv")) |> 
+  bind_rows(read.csv("data/kyoto.csv")) |> 
+  bind_rows(read.csv("data/vancouver.csv")) |> 
+  bind_rows(read.csv("data/nyc.csv"))
+```
+
+#Functions to get the historical data from NOAA, and combine it with the provided Historical Bloom Date Data
+The stations closest to the sites for the competition with continuously collected maximum temperatures, and their periods of record are:
+USW00013743 (Washington D.C.), 1936-09-01 to 2026-02-17
+SZ000001940 (Liestal), 1901-01-01 to 2026-01-31
+JA000047759 (Kyoto), 1945-10-31 to 2026-02-01
+CA001108395 (Vancouver),1957-01-06 to 2025-08-24
+and USW00014732 (New York), 1939-10-07 to 2026-02-17
+```{r}
+#NOAA API key
+NOAA_WEB_API_TOKEN <- Sys.getenv("TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq")
+
+#Station IDs
+stations <- c(
+  "washingtondc" = "GHCND:USW00013743",
+  "liestal"      = "GHCND:SZ000001940",
+  "kyoto"        = "GHCND:JA000047759",
+  "vancouver"    = "GHCND:CA001108395",
+  "newyorkcity"  = "GHCND:USW00014732"
+  )
+
+
+#function to get bloom data for a given location (entered as a character string)
+get_blooms <- function(loc){
+  #get data from cherry
+  blooms <- cherry %>% filter(location == loc)
+  #remove columns we're not interested in
+  blooms <- blooms %>% select(-"lat", -"long", -"alt")
+}
+
+
+#Function to get temperature data:
+#from a start date (entered in "yyyy-mm-dd") to today, for a given stationID (entered as a character string)
+#get temperature data from noaa
+get_temps <- function(stationID, startDate){
+  temps <- ghcnd_search(stationid = stationID,
+               var = c("tmax", "tmin"),
+               date_min = startDate,
+               date_max = Sys.Date()) %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2) %>% 
+  drop_na() %>%
+  mutate(stationID = stationID) #clean data, add stationID to dataset
+  #get location from stationID
+  if (stationID == "USW00013743"){
+    loc <- "washingtondc"
+  }
+  else if (stationID == "SZ000001940"){
+    loc <- "liestal"
+  }
+  else if (stationID == "JA000047759"){
+    loc <- "kyoto"
+  }
+  else if (stationID == "CA001108395"){
+    loc <- "vancouver"
+  }
+  else if (stationID == "USW00014732"){
+    loc <- "newyorkcity"
+  }
+  #add location to dataset
+  temps <- temps %>% mutate(location = loc)
+  #re-order dataset
+  temps <- temps[,c(7,6,1,2,3,4,5)]
+}
+
+
+#function to align the dates of given temperature and bloom data
+allign_dates <- function(blooms, temps){
+  #get the range of full years covered in both datasets
+  minYear <- max(c(min(blooms$year), min(temps$year)))
+  maxYear <- min(c(max(blooms$year), max(temps$year)))
+
+  #trim each to length
+  blooms <- blooms %>% filter(year > minYear & year <= maxYear)
+  temps <- temps %>% filter(year > minYear & year <= maxYear)
+  
+  
+  #join the tables
+  data <- 
+  temps %>% 
+  group_by(year) %>% 
+  nest() %>% 
+  left_join(blooms)
+  
+  #re-organize for redability
+  data <- data[,c(3,1,4,5,2)]
+}
+
+
+#AIO call of the above functions for one location
+get_data <- function(location, stationID, startDate){
+  blooms <- get_blooms(location)
+  temps <- get_temps(stationID, startDate)
+  data <- allign_dates(blooms, temps)
+}
+```
+
+#Getting the historical data for each location
+```{r}
+data_washingtondc <- get_data("washingtondc", "USW00013743", "1936-09-01")
+data_liestal <- get_data("liestal", "SZ000001940", "1901-01-01")
+data_kyoto <- get_data("kyoto", "JA000047759", "1945-10-31")
+data_vancouver <- get_data("vancouver", "CA001108395", "1957-01-06")
+data_newyorkcity <- get_data("newyorkcity", "USW00014732", "1939-10-07")
+
+```
+
+#Functions for Quetelet's method
+```{r}
+#Function to get date of last frost, in DOY
+doy_last_frost <- function(tmax, doy_max = 100) {
+  dof <- which(tmax[1:doy_max] <= 0)
+  if(length(dof) == 0) 1 else max(dof) + 1
+}
+
+#Function to predict a year's bloom date, in DOY
+doy_prediction <- function(temp, tmax, law)
+  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
+
+#function to calculate the law values for a dataset
+get_law <- function(data){
+  data <- data %>%
+    mutate(law = map(data, ~ sum(pmax(.$temp, 0, na.rm = TRUE)[(doy_last_frost(.$tmax) + 1):bloom_doy]^2))) %>% 
+    unnest(law) %>% 
+    ungroup() 
+}
+
+
+#function to predict a year's bloom date, in DOY, using Quetelet's method
+predict_quetelet <- function(data){
+  mean_law <- mean(data$law)
+  data <- data %>%
+  mutate(pred_bloom_doy = map(data, ~ doy_prediction(.$temp, .$tmax, mean_law))) %>% 
+  unnest(pred_bloom_doy) %>% 
+  ungroup()
+}
+
+
+#AIO function call for quetelet's method
+quetelet_method <- function(data){
+  data <- get_law(data)
+  data <- predict_quetelet(data)
+}
+```
+
+#Make historical predictions (training data) using quetelet's method
+```{r}
+quetelet_washingtondc <- quetelet_method(data_washingtondc)
+quetelet_liestal <- quetelet_method(data_liestal)
+quetelet_kyoto <- quetelet_method(data_kyoto)
+quetelet_vancouver <- quetelet_method(data_vancouver)
+quetelet_newyorkcity <- quetelet_method(data_newyorkcity)
+```
+
+#Functions for MGDD method
+```{r}
+#TODO
+```
+
+#Make historical predictions (training data) using MGDD method
+```{r}
+#TODO
+```
+
+#Functions for Winter Chill Days method
+```{r}
+#TODO
+```
+
+#Make historical predictions (training data) using Winter Chill Days method
+```{r}
+#TODO
+```
+
+#Functions to get this year's temperature data from NOAA and AccuWeather, and format it properly
+```{r}
+#TODO
+```
+
+#Getting this year's data for each location
+```{r}
+#TODO
+```
+
+#Making this year's predictions using each method
+```{r}
+#TODO
+```
+
