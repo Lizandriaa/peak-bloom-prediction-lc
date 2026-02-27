@@ -146,6 +146,39 @@ data_newyorkcity <- get_data("newyorkcity", "USW00014732", "1939-10-07")
 
 ```
 
+#Getting this year's (2026) temperature data
+```{r}
+#get this year's predictions from accuweather
+AccuWeather2026 <- read.csv("data/accuweather_forecast_2026.csv")
+#format to match NOAA data
+AccuWeather2026 <- AccuWeather2026 %>% mutate(stationID = "Accuweather")
+AccuWeather2026$date <- as_date(AccuWeather2026$date)
+AccuWeather2026 <- AccuWeather2026[,c(6,7,2,1,3,4,5)]
+
+#split up by location
+AccuWeather2026_washingtondc <- AccuWeather2026 %>% filter(location == "washington")
+AccuWeather2026_liestal <- AccuWeather2026 %>% filter(location == "liestal")
+AccuWeather2026_kyoto <- AccuWeather2026 %>% filter(location == "kyoto")
+AccuWeather2026_vancouver <- AccuWeather2026 %>% filter(location == "vancouver")
+AccuWeather2026_newyorkcity<- AccuWeather2026 %>% filter(location == "newyork")
+
+#get this year's temperatures from NOAA (& format date to a date)
+NOAA2026_washingtondc <- get_temps("USW00013743", "2026-01-01")
+NOAA2026_washingtondc$date <- as_date(NOAA2026_washingtondc$date)
+NOAA2026_liestal <- get_temps("SZ000001940", "2026-01-01")
+NOAA2026_kyoto <- get_temps("JA000047759", "2026-01-01")
+NOAA2026_vancouver <- get_temps("CA001108395", "2026-01-01")
+NOAA2026_newyorkcity <- get_temps("USW00014732", "2026-01-01")
+
+#couldn't get this to work, fix later, for now just use accuweather data on it's own
+#combine, preferring NOAA's data
+#temps2026_washingtondc <- left_join(x=NOAA2026_washingtondc, y=AccuWeather2026_washingtondc)
+#temps2026_liestal <- 
+#temps2026_kyoto <- 
+#temps2026_vancouver <- 
+#temps2026_newyorkcity <- 
+```
+
 #Functions for Quetelet's method
 ```{r}
 #Function to get date of last frost, in DOY
@@ -157,6 +190,7 @@ doy_last_frost <- function(tmax, doy_max = 100) {
 #Function to predict a year's bloom date, in DOY
 doy_prediction_quetelet <- function(temp, tmax, law)
   doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
+
 
 #function to calculate the law values for a dataset
 get_law <- function(data){
@@ -193,6 +227,55 @@ quetelet_vancouver <- quetelet_method(data_vancouver)
 quetelet_newyorkcity <- quetelet_method(data_newyorkcity)
 ```
 
+#Make this year's prediction using quetelet's method
+```{r}
+#Function to predict the bloom date in 2026, for a given location, using Quetelet's method
+predict_2026_quetelet <- function(loc) {
+  if (loc == "washingtondc"){
+    loc_temp <- AccuWeather2026_washingtondc$temp
+    loc_tmax <- AccuWeather2026_washingtondc$tmax
+    mean_law <- mean(quetelet_washingtondc$law)
+  }
+  else if (loc == "liestal"){
+    loc_temp <- AccuWeather2026_liestal$temp
+    loc_tmax <- AccuWeather2026_liestal$tmax
+    mean_law <- mean(quetelet_liestal$law)
+  }
+  else if (loc == "kyoto"){
+    loc_temp <- AccuWeather2026_kyoto$temp
+    loc_tmax <- AccuWeather2026_kyoto$tmax
+    mean_law <- mean(quetelet_kyoto$law)
+  }
+  else if (loc == "vancouver"){
+    loc_temp <- AccuWeather2026_vancouver$temp
+    loc_tmax <- AccuWeather2026_vancouver$tmax
+    mean_law <- mean(quetelet_vancouver$law)
+  }
+  else if (loc == "newyorkcity"){
+    loc_temp <- AccuWeather2026_newyorkcity$temp
+    loc_tmax <- AccuWeather2026_newyorkcity$tmax
+    mean_law <- mean(quetelet_newyorkcity$law)
+  }
+  
+  doy <- doy_prediction_quetelet(loc_temp, loc_tmax, mean_law)
+}
+
+bloom_doy_2026_washingtondc <- predict_2026_quetelet("washingtondc")
+bloom_date_2026_washingtondc <- as.Date(bloom_doy_2026_washingtondc, origin = "2026-01-01")
+
+bloom_doy_2026_liestal <- predict_2026_quetelet("liestal")
+bloom_date_2026_liestal <- as.Date(bloom_doy_2026_liestal, origin = "2026-01-01")
+
+bloom_doy_2026_kyoto <- predict_2026_quetelet("kyoto")
+bloom_date_2026_kyoto <- as.Date(bloom_doy_2026_kyoto, origin = "2026-01-01")
+
+bloom_doy_2026_vancouver <- predict_2026_quetelet("vancouver")
+bloom_date_2026_vancouver <- as.Date(bloom_doy_2026_vancouver, origin = "2026-01-01")
+
+bloom_doy_2026_newyorkcity <- predict_2026_quetelet("newyorkcity")
+bloom_date_2026_newyorkcity <- as.Date(bloom_doy_2026_newyorkcity, origin = "2026-01-01")
+```
+
 #Functions for GDD/MGDD method
 Similar to Quetelet's method, Growing Degree Days (GDDs) and Modified Growing Degree Days (MGDDs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
 
@@ -208,8 +291,8 @@ Similarly to Quetelet's method, there is some required amount of cumulative GDDs
 #Do regular GDDs first (need to determine best base value)
 #then MGDDs if time permits (need to determine best upper & lower bounds)
 
-#Function to get start of GDD period, in DOY
-doy_first_GDD <- function(temp, base_temp = 10, doy_max = 100) {
+#Function to get start of GDD period, in DOY (from first day GDD is positive)
+doy_first_GDD <- function(temp, base_temp = 0, doy_max = 100) {
   #gets list of days where GDD is positive
   GDDs <- which(((temp[1:doy_max])-base_temp) > 0)
   #gets first day where GDD is positive
@@ -224,7 +307,7 @@ doy_prediction_GDD <- function(temp, tmax, law)
 
 #function to calculate the GDD_score for a dataset
   #GDD_score = cumulative GDD values from first day of year where GDD is positive
-get_GDD_score <- function(data, base_temp = 10){
+get_GDD_score <- function(data, base_temp = 0){
   data <- data %>%
     mutate(GDD_score = map(data, ~ sum(pmax(((.$temp)-base_temp), 0, na.rm = TRUE)[(doy_first_GDD(.$temp) + 1):bloom_doy]))) %>% 
     unnest(GDD_score) %>% 
@@ -241,7 +324,7 @@ predict_GDD <- function(data){
 }
 
 
-#AIO function call for GDD method
+#AIO function call for GDD method (counting GDDs from first positive GDD, using base_temp of 0c)
 GDD_method <- function(data){
   data <- get_GDD_score(data)
   data <- predict_GDD(data)
@@ -251,6 +334,8 @@ GDD_method <- function(data){
 GDD_washingtondc <- GDD_method(data_washingtondc)
 
 ```
+#Functions for GDD/MGDD method
+
 
 #Make historical predictions (training data) using GDD/MGDD method
 ```{r}
@@ -286,9 +371,3 @@ Similarly to Quetelet's method, there is some required amount of cumulative GDDs
 ```{r}
 #TODO
 ```
-
-#Making this year's predictions using each method
-```{r}
-#TODO
-```
-
