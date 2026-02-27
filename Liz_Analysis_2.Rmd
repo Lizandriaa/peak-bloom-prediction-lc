@@ -155,7 +155,7 @@ doy_last_frost <- function(tmax, doy_max = 100) {
 }
 
 #Function to predict a year's bloom date, in DOY
-doy_prediction <- function(temp, tmax, law)
+doy_prediction_quetelet <- function(temp, tmax, law)
   doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
 
 #function to calculate the law values for a dataset
@@ -171,8 +171,8 @@ get_law <- function(data){
 predict_quetelet <- function(data){
   mean_law <- mean(data$law)
   data <- data %>%
-  mutate(pred_bloom_doy = map(data, ~ doy_prediction(.$temp, .$tmax, mean_law))) %>% 
-  unnest(pred_bloom_doy) %>% 
+  mutate(pred_bloom_doy_quetelet = map(data, ~ doy_prediction_quetelet(.$temp, .$tmax, mean_law))) %>% 
+  unnest(pred_bloom_doy_quetelet) %>% 
   ungroup()
 }
 
@@ -193,17 +193,81 @@ quetelet_vancouver <- quetelet_method(data_vancouver)
 quetelet_newyorkcity <- quetelet_method(data_newyorkcity)
 ```
 
-#Functions for MGDD method
+#Functions for GDD/MGDD method
+Similar to Quetelet's method, Growing Degree Days (GDDs) and Modified Growing Degree Days (MGDDs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
+
+Growing degree days are calculated for each day as: ((tmax-tmin)/2)-base.
+Base is a threshold temperature below which a plant does not develop. It is a mechanistic value, need to consult research to determine a base temp for cherry blossoms. 
+In agricultural applications, 10c is a common base temperature for Corn, Soybeans, Tomatoes, Turfgrass, 4.4c is a common base temperature for Wheat, Alfalfa, many insects, and 0c is a common base for specific perennial crops.
+
+Growing degree days are calculated for each day as: (((tmax<=upper_bound)-(tmin>=base))/2)-base.
+Modified growing degree days are calculated similarly to standard GDDs, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, and the lower threshold is commonly the base value.
+
+Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
+```{r}
+#Do regular GDDs first (need to determine best base value)
+#then MGDDs if time permits (need to determine best upper & lower bounds)
+
+#Function to get start of GDD period, in DOY
+doy_first_GDD <- function(temp, base_temp = 10, doy_max = 100) {
+  #gets list of days where GDD is positive
+  GDDs <- which(((temp[1:doy_max])-base_temp) > 0)
+  #gets first day where GDD is positive
+  if(length(GDDs) == 0) 1 else min(GDDs)
+}
+
+
+#Function to predict a year's bloom date, in DOY
+doy_prediction_GDD <- function(temp, tmax, law)
+  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
+
+
+#function to calculate the GDD_score for a dataset
+  #GDD_score = cumulative GDD values from first day of year where GDD is positive
+get_GDD_score <- function(data, base_temp = 10){
+  data <- data %>%
+    mutate(GDD_score = map(data, ~ sum(pmax(((.$temp)-base_temp), 0, na.rm = TRUE)[(doy_first_GDD(.$temp) + 1):bloom_doy]))) %>% 
+    unnest(GDD_score) %>% 
+    ungroup() 
+}
+
+#function to predict a year's bloom date, in DOY, using GDD method
+predict_GDD <- function(data){
+  mean_GDD_score <- mean(data$GDD_score)
+  data <- data %>%
+  mutate(pred_bloom_doy_GDD = map(data, ~ doy_prediction_GDD(.$temp, .$tmax, mean_GDD_score))) %>% 
+  unnest(pred_bloom_doy_GDD) %>% 
+  ungroup()
+}
+
+
+#AIO function call for GDD method
+GDD_method <- function(data){
+  data <- get_GDD_score(data)
+  data <- predict_GDD(data)
+}
+
+
+GDD_washingtondc <- GDD_method(data_washingtondc)
+
+```
+
+#Make historical predictions (training data) using GDD/MGDD method
 ```{r}
 #TODO
 ```
 
-#Make historical predictions (training data) using MGDD method
-```{r}
-#TODO
-```
+#Functions for WCD/CP method
+Similar to Growing Degree Days/Modified Growing Degree Days, Winter Chill Days (WCDs) and Chill Portions (CPs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
 
-#Functions for Winter Chill Days method
+Winter Chill Days are calculated for each day as: base-(tmax-tmin).
+Base is a threshold temperature above which a plant does not do winter dormancy. It is a mechanistic value, need to consult research to determine a base temp for cherry blossoms.
+
+Winter Portions are calculated for each day as: base - ((tmax<=upper_bound)-(tmin>=base))/2
+(((tmax<=upper_bound)-(tmin>=base))/2)-base.
+Winter Portions are calculated similarly to standard WCD, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, (commonly 7c or 12c) and the lower threshold is commonly the base value.
+
+Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
 ```{r}
 #TODO
 ```
