@@ -276,6 +276,8 @@ bloom_doy_2026_newyorkcity <- predict_2026_quetelet("newyorkcity")
 bloom_date_2026_newyorkcity <- as.Date(bloom_doy_2026_newyorkcity, origin = "2026-01-01")
 ```
 
+-----------------------
+
 #Functions for GDD/MGDD method
 Similar to Quetelet's method, Growing Degree Days (GDDs) and Modified Growing Degree Days (MGDDs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
 
@@ -285,6 +287,17 @@ In agricultural applications, 10c is a common base temperature for Corn, Soybean
 
 Growing degree days are calculated for each day as: (((tmax<=upper_bound)-(tmin>=base))/2)-base.
 Modified growing degree days are calculated similarly to standard GDDs, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, and the lower threshold is commonly the base value.
+
+Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
+
+Similar to Growing Degree Days/Modified Growing Degree Days, Winter Chill Days (WCDs) and Chill Portions (CPs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
+
+Winter Chill Days are calculated for each day as: base-(tmax-tmin).
+Base is a threshold temperature above which a plant does not do winter dormancy. It is a mechanistic value, need to consult research to determine a base temp for cherry blossoms.
+
+Winter Portions are calculated for each day as: base - ((tmax<=upper_bound)-(tmin>=base))/2
+(((tmax<=upper_bound)-(tmin>=base))/2)-base.
+Winter Portions are calculated similarly to standard WCD, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, (commonly 7c or 12c) and the lower threshold is commonly the base value.
 
 Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
 ```{r}
@@ -334,40 +347,139 @@ GDD_method <- function(data){
 GDD_washingtondc <- GDD_method(data_washingtondc)
 
 ```
-#Functions for GDD/MGDD method
+
+#Functions for GDD/MGDD method attempt 2
+In testing above, results were worse than Quetelet's method. Let's try a different approach.
+
+Better understanding of GDDs:
+There are two periods of interest for which GDDs are used, the endo-dormant phase (winter chill -> chilling days) and eco-dormant phase (GDD/MGDD -> warming days).
+Degree Days are calculated the same for both, the mean temperature above or below some threshold value (above for warming, below for cooling. They do not have to be the same threshold value, but can be. They can also be adjusted to have opposite extreme cutoff values past which the Degree Days are not calculated, this is the concept behind modified growing degree days.)
+The cumulative degree days are what is used to predict bloom, similar to cumulative temperature in Quetelet's.
+
+Cumulative Warming Days are calculated from some initial warming date until the bloom date. In lab studies of the Yoshino Cherry Tree (Prunus x yedoensis) the initial warming date is the first day in which the rolling average temperature over 5-10 days is above (at or above?) some threshold value, usually 2-3c. There does not seem to be an upper bound temperature above which growing degree days should be capped, although some studies have used 30-32c as an upper bound. (test w/out, and then with.)
+
+Cumulative Cooling Days are calculated from some initial cooling date until some final cooling date. Deriving from the intital warming date, the initial cooling date ought to be the first day in which the rolling average temperature over 5-10 days is below (at or below?) some threshold value. Likewise, the final cooling date ought to be the last day before the rolling average temperature over 5-10 days is above some threshold value. I'm unsure what threshold value to use here, perhaps the same threshold for warming days (2-3c), perhaps freezing (0c) or perhaps something else.
+There does seem to be a lower bound temperature below which cooling degree days should be capped. Yoshino Cherry Trees are in the USDA hardiness zone 5-8, which says that temperatures below the range of -23c to -18c can be harmful to the tree.
+
+Before I was just summing the degree days to get the cumulative degree days, but the Baskerville-Emin method looks like something worth exploring: draw a curve of average temperatures, then take the area between that curve and the threshold/cutoff values.
 
 
-#Make historical predictions (training data) using GDD/MGDD method
+#Get the temperature data
+I'm also going to do the data wrangling slightly differently than previously, and try to avoid creating tables by location.
 ```{r}
-#TODO
+#function to get all temps for specific locations from minimum date range to present
+#takes in a vector of station IDs and a vector of corresponding start dates 
+get_all_temps <- function(stationIDs, startDates){
+  temps <- get_temps(stationIDs[1], startDates[1])
+  counter = 2;
+  while (counter <= length(stationIDs)){
+    temps <- bind_rows(temps, get_temps(stationIDs[counter], startDates[counter]))
+    counter <- counter+1
+  }
+  temps
+}
+
+stationIDs <- c(
+  "washingtondc" = "USW00013743",
+  "liestal"      = "SZ000001940",
+  "kyoto"        = "JA000047759",
+  "vancouver"    = "CA001108395",
+  "newyorkcity"  = "USW00014732"
+  )
+
+startDates <- c(
+  "washingtondc" = "1936-09-01",
+  "liestal"      = "1901-01-01",
+  "kyoto"        = "1945-10-31",
+  "vancouver"    = "1957-01-06",
+  "newyorkcity"  = "1939-10-07"
+)
+
+all_temps <- get_all_temps(stationIDs, startDates)
 ```
 
-#Functions for WCD/CP method
-Similar to Growing Degree Days/Modified Growing Degree Days, Winter Chill Days (WCDs) and Chill Portions (CPs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
+#Calculate each day's Warming Degree Days and Cooling Degree Days
+Using lower threshold of 3c and upper threshold of 30c (to start with, can tune these later.)
+warming day value = (tmax-tmin/2)-lower
 
-Winter Chill Days are calculated for each day as: base-(tmax-tmin).
-Base is a threshold temperature above which a plant does not do winter dormancy. It is a mechanistic value, need to consult research to determine a base temp for cherry blossoms.
+                    if (tmax>=upper & tmin<= lower){= ((upper+lower)/2)-lower}
+                    else if (tmax>=upper){= ((upper+tmin)/2)-lower}
+                    else if (tmin<=lower){= ((tmax+lower)/2)-lower}
+                    else{= temp-lower}
 
-Winter Portions are calculated for each day as: base - ((tmax<=upper_bound)-(tmin>=base))/2
-(((tmax<=upper_bound)-(tmin>=base))/2)-base.
-Winter Portions are calculated similarly to standard WCD, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, (commonly 7c or 12c) and the lower threshold is commonly the base value.
+Using an upper threshold of 3c and a lower threshold of -18c (to start with, can tune these later.)
+cooling day value = 
 
-Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
+                    if (tmax>=upper & tmin<= lower){= ((upper+lower)/2)+upper}
+                    else if (tmax>=upper){= ((upper+tmin)/2)+upper}
+                    else if (tmin<=lower){= ((tmax+lower)/2)+upper}
+                    else{= temp-lower}
 ```{r}
-#TODO
+#function to calculate warming degree day value (WDD) from tmax and tmin, given an upper and lower bound
+get_WDD <- function(tmax, tmin, temp, upper=30, lower=3){
+  WDD_value <- 0
+  if (tmax>=upper && tmin<= lower){WDD_value = ((upper+lower)/2)-lower}
+  else if (tmax>=upper){WDD_value = ((upper+tmin)/2)-lower}
+  else if (tmin<=lower){WDD_value = ((tmax+lower)/2)-lower}
+  else{WDD_value = temp-lower}
+}
+#test
+wdd1 <- get_WDD(all_temps$tmax[1], all_temps$tmin[1], all_temps$temp[1])
+#wdd_all <- get_WDD(all_temps$tmax, all_temps$tmin, all_temps$temp) #error
+#wdd_all <- map(all_temps, get_WDD(all_temps, .$tmax, .$tmin, .$temp, upper=30, lower=3)) #%>%
+#all_temps <- all_temps %>% mutate(wdd <- map(all_temps, get_WDD(tmax, tmin, temp)))
+
+#function to calculate cooling degree day value (WDD) from tmax and tmin, given an upper and lower bound
+get_CDD <- function(tmax, tmin, temp, upper=3, lower=-18){
+  CDD_value <- 0
+  if (tmax>=upper && tmin<= lower){CDD_value = ((upper+lower)/2)+upper}
+  else if (tmax>=upper){CDD_value = ((upper+tmin)/2)+upper}
+  else if (tmin<=lower){CDD_value = ((tmax+lower)/2)+upper}
+  else{CDD_value = temp-lower}
+}
+
+
+#function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
+#add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
+#  data <- data %>% 
+#    mutate(WDD <- get_WDD(.$tmax, .$tmin, warming_upper, warming_lower))
+#}
+
+#function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
+#add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
+#  data <- data %>% 
+#    mutate(WDD = map(data, get_WDD(tmax, tmin, temp, warming_upper, warming_lower))) #%>%
+#    unnest(WDD) %>%
+#    ungroup()
+#}
+
+#function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
+#it's a fuck ass loop, this prolly isn't sigma big-O or whatever but I couldn't get map() to work
+add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
+  counter <- 1
+  WDD <- vector(mode="double", length=length(data$temp))
+  CDD <- vector(mode="double", length=length(data$temp))
+  while(counter<=length(data$temp)){
+    WDD[counter] <- get_WDD(data$tmax[counter], data$tmin[counter], data$temp[counter], warming_upper, warming_lower)
+    CDD[counter] <- get_CDD(data$tmax[counter], data$tmin[counter], data$temp[counter], cooling_upper, cooling_lower)
+    counter <- counter+1
+  }
+  data$WDD <- WDD
+  data$CDD <- CDD
+  data
+}
+
+
+all_DDs <- all_temps %>% add_degree_days()
+
+
 ```
 
-#Make historical predictions (training data) using Winter Chill Days method
+#Calculate each year's cumulative Warming Degree Days and cumulative Cooling Degree Days
+For cooling degree days, need to go back to the previous year's winter most likely - might be a pain to calculate.
 ```{r}
-#TODO
+
 ```
 
-#Functions to get this year's temperature data from NOAA and AccuWeather, and format it properly
-```{r}
-#TODO
-```
 
-#Getting this year's data for each location
-```{r}
-#TODO
-```
+
