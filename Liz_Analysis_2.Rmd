@@ -397,11 +397,21 @@ startDates <- c(
 
 all_temps <- get_all_temps(stationIDs, startDates)
 ```
+#Rolling average is needed for later calculations, so I'll go ahead and calculate it here & add it to the temperature data.
+TODO: tidy up, implement as function to choose rolling days amount (between 5 & 10)
+```{r}
+#install.packages("zoo")
+library(zoo)
+all_temps2 <- all_temps %>%
+  group_by(location) %>%
+  arrange(date) %>%
+  mutate(roll5_temp = rollmean(temp, k = 5, fill = NA, align = "right")) %>%
+  ungroup()
+```
 
 #Calculate each day's Warming Degree Days and Cooling Degree Days
 Using lower threshold of 3c and upper threshold of 30c (to start with, can tune these later.)
-warming day value = (tmax-tmin/2)-lower
-
+warming day value = 
                     if (tmax>=upper & tmin<= lower){= ((upper+lower)/2)-lower}
                     else if (tmax>=upper){= ((upper+tmin)/2)-lower}
                     else if (tmin<=lower){= ((tmax+lower)/2)-lower}
@@ -409,7 +419,6 @@ warming day value = (tmax-tmin/2)-lower
 
 Using an upper threshold of 3c and a lower threshold of -18c (to start with, can tune these later.)
 cooling day value = 
-
                     if (tmax>=upper & tmin<= lower){= ((upper+lower)/2)+upper}
                     else if (tmax>=upper){= ((upper+tmin)/2)+upper}
                     else if (tmin<=lower){= ((tmax+lower)/2)+upper}
@@ -423,11 +432,6 @@ get_WDD <- function(tmax, tmin, temp, upper=30, lower=3){
   else if (tmin<=lower){WDD_value = ((tmax+lower)/2)-lower}
   else{WDD_value = temp-lower}
 }
-#test
-wdd1 <- get_WDD(all_temps$tmax[1], all_temps$tmin[1], all_temps$temp[1])
-#wdd_all <- get_WDD(all_temps$tmax, all_temps$tmin, all_temps$temp) #error
-#wdd_all <- map(all_temps, get_WDD(all_temps, .$tmax, .$tmin, .$temp, upper=30, lower=3)) #%>%
-#all_temps <- all_temps %>% mutate(wdd <- map(all_temps, get_WDD(tmax, tmin, temp)))
 
 #function to calculate cooling degree day value (WDD) from tmax and tmin, given an upper and lower bound
 get_CDD <- function(tmax, tmin, temp, upper=3, lower=-18){
@@ -437,7 +441,6 @@ get_CDD <- function(tmax, tmin, temp, upper=3, lower=-18){
   else if (tmin<=lower){CDD_value = ((tmax+lower)/2)+upper}
   else{CDD_value = temp-lower}
 }
-
 
 #function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
 #add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
@@ -470,16 +473,70 @@ add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upp
 }
 
 
-all_DDs <- all_temps %>% add_degree_days()
-
-
+all_DDs <- all_temps2 %>% add_degree_days()
 ```
 
 #Calculate each year's cumulative Warming Degree Days and cumulative Cooling Degree Days
 For cooling degree days, need to go back to the previous year's winter most likely - might be a pain to calculate.
 ```{r}
+#TODO: fix/make different allign_dates that preserves bloom dates & bloom doys
+
+allign_dates <- function(blooms, temps){
+  minYear <- max(c(min(blooms$year), min(temps$year)))
+  maxYear <- min(c(max(blooms$year), max(temps$year)))
+
+  #trim each to length
+  blooms <- blooms %>% filter(year > minYear & year <= maxYear)
+  temps <- temps %>% filter(year > minYear & year <= maxYear)
+  
+  
+  #join the tables
+  data <- 
+  temps %>% 
+  group_by(year) %>% 
+  nest() %>% 
+  left_join(blooms)
+  
+  #re-organize for redability
+  data <- data[,c(3,1,4,5,2)]
+}
+
+#this is a jank fix, but it works! TODO: make the fix less jank
+allign_dates2 <- function(blooms, temps){
+  blooms <- blooms %>%
+    group_by(location)
+}
+
+all_data <- allign_dates2(cherry, all_DDs)
+all_data <- all_data %>% arrange(location, year)
+
+#function to get a year's initial warming date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
+doy_initial_warming <- function(roll5_temp, doy_max = 100, warming_lower=3) {
+  dof <- which(roll5_temp[1:doy_max] >= warming_lower)
+  if(length(dof) == 0) 1 else min(dof)
+}
+
+#Function to get a year's cumulative WDD between it's initial warming date & it's bloom date
+get_warming <- function(data){
+  data <- data %>%
+    mutate(warming = map(data, ~ sum(pmax(.$WDD, 0, na.rm = TRUE)[(doy_initial_warming(.$roll5_temp)):bloom_doy]))) %>% 
+    unnest(warming) %>% 
+    ungroup() 
+}
+
+all_data_warming <- get_warming(all_data)
+#Function to get a year's cumulative CDD between the initial warming date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
 
 ```
 
 
+#Predict based on cumulative Warming Degree Days and cumulative Cooling Degree Days
+```{r}
+
+```
+
+#Use law/cumulative temperature, cumulative Warming Degree Days and cumulative Cooling Degree Days in a random forrest or XGBoost to get the best of all 3 models
+```{r}
+
+```
 
