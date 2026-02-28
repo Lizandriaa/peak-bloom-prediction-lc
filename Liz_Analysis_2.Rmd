@@ -397,16 +397,27 @@ startDates <- c(
 
 all_temps <- get_all_temps(stationIDs, startDates)
 ```
-#Rolling average is needed for later calculations, so I'll go ahead and calculate it here & add it to the temperature data.
-TODO: tidy up, implement as function to choose rolling days amount (between 5 & 10)
+#Rolling average temperature is needed for later calculations, so I'll go ahead and calculate it here & add it to the temperature data.
+TODO: tidy up, implement as function to choose rolling days amount (try values between 5 & 10, default to 7)
 ```{r}
 #install.packages("zoo")
 library(zoo)
 all_temps2 <- all_temps %>%
   group_by(location) %>%
   arrange(date) %>%
-  mutate(roll5_temp = rollmean(temp, k = 5, fill = NA, align = "right")) %>%
+  mutate(roll_temp = rollmean(temp, k = 7, fill = NA, align = "right")) %>%
   ungroup()
+
+#function to add rolling temp averages to temp data
+get_rolling_avgs <- function(data, k=7){
+  data <- data %>%
+    group_by(location) %>%
+    arrange(date) %>%
+    mutate(roll_temp = rollmean(temp, k = 7, fill = NA, align = "right")) %>%
+    ungroup()
+}
+
+all_temps <- all_temps %>% get_rolling_avgs()
 ```
 
 #Calculate each day's Warming Degree Days and Cooling Degree Days
@@ -481,7 +492,7 @@ For cooling degree days, need to go back to the previous year's winter most like
 ```{r}
 #TODO: fix/make different allign_dates that preserves bloom dates & bloom doys
 
-allign_dates <- function(blooms, temps){
+allign_dates2 <- function(blooms, temps){
   minYear <- max(c(min(blooms$year), min(temps$year)))
   maxYear <- min(c(max(blooms$year), max(temps$year)))
 
@@ -498,41 +509,55 @@ allign_dates <- function(blooms, temps){
   left_join(blooms)
   
   #re-organize for redability
-  data <- data[,c(3,1,4,5,2)]
-}
-
-#this is a jank fix, but it works! TODO: make the fix less jank
-allign_dates2 <- function(blooms, temps){
-  blooms <- blooms %>%
-    group_by(location)
+  data <- data[,c(3,4,5,6,1,7,8,2)]
 }
 
 all_data <- allign_dates2(cherry, all_DDs)
 all_data <- all_data %>% arrange(location, year)
 
 #function to get a year's initial warming date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
-doy_initial_warming <- function(roll5_temp, doy_max = 100, warming_lower=3) {
-  dof <- which(roll5_temp[1:doy_max] >= warming_lower)
+doy_initial_warming <- function(roll_temp, doy_max = 100, warming_lower=3) {
+  dof <- which(roll_temp[1:doy_max] >= warming_lower)
   if(length(dof) == 0) 1 else min(dof)
 }
 
 #Function to get a year's cumulative WDD between it's initial warming date & it's bloom date
 get_warming <- function(data){
   data <- data %>%
-    mutate(warming = map(data, ~ sum(pmax(.$WDD, 0, na.rm = TRUE)[(doy_initial_warming(.$roll5_temp)):bloom_doy]))) %>% 
+    mutate(warming = map(data, ~ sum(pmax(.$WDD, 0, na.rm = TRUE)[(doy_initial_warming(.$roll_temp)):bloom_doy]))) %>% 
     unnest(warming) %>% 
     ungroup() 
 }
 
-all_data_warming <- get_warming(all_data)
-#Function to get a year's cumulative CDD between the initial warming date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
+all_data <- get_warming(all_data)
+
+
+#function to get a year's initial cooling date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
+doy_initial_warming <- function(roll_temp, doy_max = 100, warming_lower=3) {
+  dof <- which(roll_temp[1:doy_max] >= warming_lower)
+  if(length(dof) == 0) 1 else min(dof)
+}
 
 ```
 
 
 #Predict based on cumulative Warming Degree Days and cumulative Cooling Degree Days
 ```{r}
+#function to predict bloom doy using warming degree days
+doy_prediction_warming <- function(roll_temp, WDD, warming) {
+  doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > warming)
+}
 
+#function to predict a year's bloom date, in DOY, using Warming Degree Day method
+predict_warming <- function(data){
+  mean_warming <- mean(data$warming)
+  data <- data %>%
+  mutate(pred_bloom_doy_warming = map(data, ~ doy_prediction_warming(.$WDD, .$tmax, mean_warming))) %>% 
+  unnest(pred_bloom_doy_warming) %>% 
+  ungroup()
+}
+
+warming_predictions <- predict_warming(all_data)
 ```
 
 #Use law/cumulative temperature, cumulative Warming Degree Days and cumulative Cooling Degree Days in a random forrest or XGBoost to get the best of all 3 models
