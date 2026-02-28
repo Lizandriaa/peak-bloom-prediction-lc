@@ -1,0 +1,714 @@
+---
+title: "Liz_Analysis_2"
+author: "Liz Conley"
+date: "2026-02-28"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#NOTE: Sys.Date() is used for a lot of the data collection. All work and analysis was finalized on 2/28/26, at approx. 6pm. When testing/evaluating, make sure to use "2026-02-28" instead of Sys.Date().
+
+#TL:DR: Final predictions are in the Predictions_2026 dataframe, in the Pred_Final_Bloom_Doy and Pred_Final_Bloom_Date columns. In case something from NOAA or AccuWeather has changed and makes this file un-runnable, I've also hard-code them into a data frame below.
+```{r}
+Final_Predictions_HardCoded <- data.frame(
+  Location = Location <- c("kyoto","liestal","newyorkcity","vancouver","washingtondc"),
+  Pred_Final_Bloom_Doy = Pred_Final_Bloom_Doy <- c(124,91,135,79,96),
+  Pred_Final_Bloom_Date = Pred_Final_Bloom_Date <- c(as.Date(124, origin = "2026-01-01"),as.Date(91, origin = "2026-01-01"),as.Date(135, origin = "2026-01-01"),as.Date(79, origin = "2026-01-01"),as.Date(96, origin = "2026-01-01"))
+)
+```
+
+
+#Load the required libraries
+```{r}
+library(tidyverse)
+library(httr2)
+library(jsonlite)
+library("knitr")
+#install.packages("kableExtra")
+library("kableExtra")
+library("tidyverse")
+#install.packages("plotly")
+library("plotly")
+#install.packages('rnoaa', repos = c('https://ropensci.r-universe.dev', 'https://cloud.r-project.org'))
+library("rnoaa")
+#install.packages("rnpn")
+library("rnpn")
+library("rvest")
+```
+
+#Load the provided Historical Bloom Date Data into the cherry dataset
+```{r}
+cherry <- read.csv("data/washingtondc.csv") |> 
+  bind_rows(read.csv("data/liestal.csv")) |> 
+  bind_rows(read.csv("data/kyoto.csv")) |> 
+  bind_rows(read.csv("data/vancouver.csv")) |> 
+  bind_rows(read.csv("data/nyc.csv"))
+```
+
+#Functions to get the historical data from NOAA, and combine it with the provided Historical Bloom Date Data
+The stations closest to the sites for the competition with continuously collected maximum temperatures, and their periods of record are:
+USW00013743 (Washington D.C.), 1936-09-01 to 2026-02-17
+SZ000001940 (Liestal), 1901-01-01 to 2026-01-31
+JA000047759 (Kyoto), 1945-10-31 to 2026-02-01
+CA001108395 (Vancouver),1957-01-06 to 2025-08-24
+and USW00014732 (New York), 1939-10-07 to 2026-02-17
+```{r}
+#NOAA API key
+NOAA_WEB_API_TOKEN <- Sys.getenv("TDhcJeLNXKlnGaNsjwnNkLhwMcdfZJEq")
+
+#Station IDs
+stations <- c(
+  "washingtondc" = "GHCND:USW00013743",
+  "liestal"      = "GHCND:SZ000001940",
+  "kyoto"        = "GHCND:JA000047759",
+  "vancouver"    = "GHCND:CA001108395",
+  "newyorkcity"  = "GHCND:USW00014732"
+  )
+
+
+#function to get bloom data for a given location (entered as a character string)
+get_blooms <- function(loc){
+  #get data from cherry
+  blooms <- cherry %>% filter(location == loc)
+  #remove columns we're not interested in
+  blooms <- blooms %>% select(-"lat", -"long", -"alt")
+}
+
+
+#Function to get temperature data:
+#from a start date (entered in "yyyy-mm-dd") to today, for a given stationID (entered as a character string)
+#get temperature data from noaa
+get_temps <- function(stationID, startDate){
+  temps <- ghcnd_search(stationid = stationID,
+               var = c("tmax", "tmin"),
+               date_min = startDate,
+               date_max = Sys.Date()) %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")), 
+            date, 
+            tmax = tmax / 10, 
+            tmin = tmin / 10, 
+            temp = (tmax + tmin) / 2) %>% 
+  drop_na() %>%
+  mutate(stationID = stationID) #clean data, add stationID to dataset
+  #get location from stationID
+  if (stationID == "USW00013743"){
+    loc <- "washingtondc"
+  }
+  else if (stationID == "SZ000001940"){
+    loc <- "liestal"
+  }
+  else if (stationID == "JA000047759"){
+    loc <- "kyoto"
+  }
+  else if (stationID == "CA001108395"){
+    loc <- "vancouver"
+  }
+  else if (stationID == "USW00014732"){
+    loc <- "newyorkcity"
+  }
+  #add location to dataset
+  temps <- temps %>% mutate(location = loc)
+  #re-order dataset
+  temps <- temps[,c(7,6,1,2,3,4,5)]
+}
+
+
+#function to align the dates of given temperature and bloom data
+allign_dates <- function(blooms, temps){
+  #get the range of full years covered in both datasets
+  minYear <- max(c(min(blooms$year), min(temps$year)))
+  maxYear <- min(c(max(blooms$year), max(temps$year)))
+
+  #trim each to length
+  blooms <- blooms %>% filter(year > minYear & year <= maxYear)
+  temps <- temps %>% filter(year > minYear & year <= maxYear)
+  
+  
+  #join the tables
+  data <- 
+  temps %>% 
+  group_by(year) %>% 
+  nest() %>% 
+  left_join(blooms)
+  
+  #re-organize for redability
+  data <- data[,c(3,1,4,5,2)]
+}
+
+
+#AIO call of the above functions for one location
+get_data <- function(location, stationID, startDate){
+  blooms <- get_blooms(location)
+  temps <- get_temps(stationID, startDate)
+  data <- allign_dates(blooms, temps)
+}
+```
+
+#Getting the historical data for each location
+```{r}
+data_washingtondc <- get_data("washingtondc", "USW00013743", "1936-09-01")
+data_liestal <- get_data("liestal", "SZ000001940", "1901-01-01")
+data_kyoto <- get_data("kyoto", "JA000047759", "1945-10-31")
+data_vancouver <- get_data("vancouver", "CA001108395", "1957-01-06")
+data_newyorkcity <- get_data("newyorkcity", "USW00014732", "1939-10-07")
+
+```
+
+#Getting this year's (2026) temperature data
+```{r}
+#get this year's predictions from accuweather
+AccuWeather2026 <- read.csv("data/accuweather_forecast_2026.csv")
+#format to match NOAA data
+AccuWeather2026 <- AccuWeather2026 %>% mutate(stationID = "Accuweather")
+AccuWeather2026$date <- as_date(AccuWeather2026$date)
+AccuWeather2026 <- AccuWeather2026[,c(6,7,2,1,3,4,5)]
+
+#split up by location
+AccuWeather2026_washingtondc <- AccuWeather2026 %>% filter(location == "washington")
+AccuWeather2026_liestal <- AccuWeather2026 %>% filter(location == "liestal")
+AccuWeather2026_kyoto <- AccuWeather2026 %>% filter(location == "kyoto")
+AccuWeather2026_vancouver <- AccuWeather2026 %>% filter(location == "vancouver")
+AccuWeather2026_newyorkcity<- AccuWeather2026 %>% filter(location == "newyork")
+
+#get this year's temperatures from NOAA (& format date to a date)
+NOAA2026_washingtondc <- get_temps("USW00013743", "2026-01-01")
+NOAA2026_washingtondc$date <- as_date(NOAA2026_washingtondc$date)
+NOAA2026_liestal <- get_temps("SZ000001940", "2026-01-01")
+NOAA2026_kyoto <- get_temps("JA000047759", "2026-01-01")
+NOAA2026_vancouver <- get_temps("CA001108395", "2026-01-01")
+NOAA2026_newyorkcity <- get_temps("USW00014732", "2026-01-01")
+
+#couldn't get this to work, fix later, for now just use accuweather data on it's own
+#combine, preferring NOAA's data
+#temps2026_washingtondc <- left_join(x=NOAA2026_washingtondc, y=AccuWeather2026_washingtondc)
+#temps2026_liestal <- 
+#temps2026_kyoto <- 
+#temps2026_vancouver <- 
+#temps2026_newyorkcity <- 
+```
+
+#Functions for Quetelet's method
+```{r}
+#Function to get date of last frost, in DOY
+doy_last_frost <- function(tmax, doy_max = 100) {
+  dof <- which(tmax[1:doy_max] <= 0)
+  if(length(dof) == 0) 1 else max(dof) + 1
+}
+
+#Function to predict a year's bloom date, in DOY
+doy_prediction_quetelet <- function(temp, tmax, law)
+  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
+
+
+#function to calculate the law values for a dataset
+get_law <- function(data){
+  data <- data %>%
+    mutate(law = map(data, ~ sum(pmax(.$temp, 0, na.rm = TRUE)[(doy_last_frost(.$tmax) + 1):bloom_doy]^2))) %>% 
+    unnest(law) %>% 
+    ungroup() 
+}
+
+
+#function to predict a year's bloom date, in DOY, using Quetelet's method
+predict_quetelet <- function(data){
+  mean_law <- mean(data$law)
+  data <- data %>%
+  mutate(pred_bloom_doy_quetelet = map(data, ~ doy_prediction_quetelet(.$temp, .$tmax, mean_law))) %>% 
+  unnest(pred_bloom_doy_quetelet) %>% 
+  ungroup()
+}
+
+
+#AIO function call for quetelet's method
+quetelet_method <- function(data){
+  data <- get_law(data)
+  data <- predict_quetelet(data)
+}
+```
+
+#Make historical predictions (training data) using quetelet's method
+```{r}
+quetelet_kyoto <- quetelet_method(data_kyoto)
+quetelet_liestal <- quetelet_method(data_liestal)
+quetelet_newyorkcity <- quetelet_method(data_newyorkcity)
+quetelet_vancouver <- quetelet_method(data_vancouver)
+quetelet_washingtondc <- quetelet_method(data_washingtondc)
+```
+
+#Evaluate quetelet's method model
+```{r}
+#TODO
+#been evaluating & tuning hyperparams by eye/vibes so far, should do something more formal... maybe next year!
+
+quetelet_evaluate <- function(Qdata){
+  Qdata %>%
+    summarize(mae  = mean(abs(bloom_doy - pred_bloom_doy_quetelet)),
+            rmse = sqrt(mean((bloom_doy - pred_bloom_doy_quetelet)^2))) %>%
+  kable(dig = 0,
+        align = "c",
+        col.names = c("mean absolute error (days)", "root mean squared error (days)"),
+        caption = "Accuracy of predictions using Quetelet's method:") %>%
+  kable_styling()
+}
+
+quetelet_evaluate(quetelet_kyoto)
+quetelet_evaluate(quetelet_liestal)
+quetelet_evaluate(quetelet_newyorkcity)
+quetelet_evaluate(quetelet_vancouver)
+quetelet_evaluate(quetelet_washingtondc)
+```
+
+#Make this year's prediction using quetelet's method
+```{r}
+#Function to predict the bloom date in 2026, for a given location, using Quetelet's method
+predict_2026_quetelet <- function(loc) {
+  if (loc == "washingtondc"){
+    loc_temp <- AccuWeather2026_washingtondc$temp
+    loc_tmax <- AccuWeather2026_washingtondc$tmax
+    mean_law <- mean(quetelet_washingtondc$law)
+  }
+  else if (loc == "liestal"){
+    loc_temp <- AccuWeather2026_liestal$temp
+    loc_tmax <- AccuWeather2026_liestal$tmax
+    mean_law <- mean(quetelet_liestal$law)
+  }
+  else if (loc == "kyoto"){
+    loc_temp <- AccuWeather2026_kyoto$temp
+    loc_tmax <- AccuWeather2026_kyoto$tmax
+    mean_law <- mean(quetelet_kyoto$law)
+  }
+  else if (loc == "vancouver"){
+    loc_temp <- AccuWeather2026_vancouver$temp
+    loc_tmax <- AccuWeather2026_vancouver$tmax
+    mean_law <- mean(quetelet_vancouver$law)
+  }
+  else if (loc == "newyorkcity"){
+    loc_temp <- AccuWeather2026_newyorkcity$temp
+    loc_tmax <- AccuWeather2026_newyorkcity$tmax
+    mean_law <- mean(quetelet_newyorkcity$law)
+  }
+  
+  doy <- doy_prediction_quetelet(loc_temp, loc_tmax, mean_law)
+}
+
+bloom_doy_2026_washingtondc <- predict_2026_quetelet("washingtondc")
+bloom_date_2026_washingtondc <- as.Date(bloom_doy_2026_washingtondc, origin = "2026-01-01")
+
+bloom_doy_2026_liestal <- predict_2026_quetelet("liestal")
+bloom_date_2026_liestal <- as.Date(bloom_doy_2026_liestal, origin = "2026-01-01")
+
+bloom_doy_2026_kyoto <- predict_2026_quetelet("kyoto")
+bloom_date_2026_kyoto <- as.Date(bloom_doy_2026_kyoto, origin = "2026-01-01")
+
+bloom_doy_2026_vancouver <- predict_2026_quetelet("vancouver")
+bloom_date_2026_vancouver <- as.Date(bloom_doy_2026_vancouver, origin = "2026-01-01")
+
+bloom_doy_2026_newyorkcity <- predict_2026_quetelet("newyorkcity")
+bloom_date_2026_newyorkcity <- as.Date(bloom_doy_2026_newyorkcity, origin = "2026-01-01")
+#Not enough data to make a prediction using quetelet's for NYC, so we'll average all the other bloom doys to make a rough estimate. #TODO: something better than this
+bloom_doy_2026_newyorkcity <- round(mean(c(bloom_doy_2026_washingtondc, bloom_doy_2026_liestal, bloom_doy_2026_kyoto, bloom_doy_2026_vancouver)))
+bloom_date_2026_newyorkcity <- as.Date(bloom_doy_2026_newyorkcity, origin = "2026-01-01")
+```
+
+-----------------------
+#Functions for GDD/MGDD method attempt 2
+In testing above, results were worse than Quetelet's method. Let's try a different approach.
+
+Better understanding of GDDs:
+There are two periods of interest for which GDDs are used, the endo-dormant phase (winter chill -> chilling days) and eco-dormant phase (GDD/MGDD -> warming days).
+Degree Days are calculated the same for both, the mean temperature above or below some threshold value (above for warming, below for cooling. They do not have to be the same threshold value, but can be. They can also be adjusted to have opposite extreme cutoff values past which the Degree Days are not calculated, this is the concept behind modified growing degree days.)
+The cumulative degree days are what is used to predict bloom, similar to cumulative temperature in Quetelet's.
+
+Cumulative Warming Days are calculated from some initial warming date until the bloom date. In lab studies of the Yoshino Cherry Tree (Prunus x yedoensis) the initial warming date is the first day in which the rolling average temperature over 5-10 days is above (at or above?) some threshold value, usually 2-3c. There does not seem to be an upper bound temperature above which growing degree days should be capped, although some studies have used 30-32c as an upper bound. (test w/out, and then with.)
+
+Cumulative Cooling Days are calculated from some initial cooling date until some final cooling date. Deriving from the intital warming date, the initial cooling date ought to be the first day in which the rolling average temperature over 5-10 days is below (at or below?) some threshold value. Likewise, the final cooling date ought to be the last day before the rolling average temperature over 5-10 days is above some threshold value. I'm unsure what threshold value to use here, perhaps the same threshold for warming days (2-3c), perhaps freezing (0c) or perhaps something else.
+There does seem to be a lower bound temperature below which cooling degree days should be capped. Yoshino Cherry Trees are in the USDA hardiness zone 5-8, which says that temperatures below the range of -23c to -18c can be harmful to the tree.
+
+Before I was just summing the degree days to get the cumulative degree days, but the Baskerville-Emin method looks like something worth exploring: draw a curve of average temperatures, then take the area between that curve and the threshold/cutoff values.
+
+
+#Get the temperature data
+I'm also going to do the data wrangling slightly differently than previously, and try to avoid creating tables by location.
+```{r}
+#function to get all temps for specific locations from minimum date range to present
+#takes in a vector of station IDs and a vector of corresponding start dates 
+get_all_temps <- function(stationIDs, startDates){
+  temps <- get_temps(stationIDs[1], startDates[1])
+  counter = 2;
+  while (counter <= length(stationIDs)){
+    temps <- bind_rows(temps, get_temps(stationIDs[counter], startDates[counter]))
+    counter <- counter+1
+  }
+  temps
+}
+
+stationIDs <- c(
+  "washingtondc" = "USW00013743",
+  "liestal"      = "SZ000001940",
+  "kyoto"        = "JA000047759",
+  "vancouver"    = "CA001108395",
+  "newyorkcity"  = "USW00014732"
+  )
+
+startDates <- c(
+  "washingtondc" = "1936-09-01",
+  "liestal"      = "1901-01-01",
+  "kyoto"        = "1945-10-31",
+  "vancouver"    = "1957-01-06",
+  "newyorkcity"  = "1939-10-07"
+)
+
+all_temps <- get_all_temps(stationIDs, startDates)
+```
+#Rolling average temperature is needed for later calculations, so I'll go ahead and calculate it here & add it to the temperature data.
+TODO: tidy up, implement as function to choose rolling days amount (try values between 5 & 10, default to 7)
+```{r}
+#install.packages("zoo")
+library(zoo)
+
+#function to add rolling temp averages to temp data
+get_rolling_avgs <- function(data, k=7){
+  data <- data %>%
+    group_by(location) %>%
+    arrange(date) %>%
+    mutate(roll_temp = rollmean(temp, k = 7, fill = NA, align = "right")) %>%
+    ungroup()
+}
+
+all_temps <- all_temps %>% get_rolling_avgs()
+```
+
+#Calculate each day's Warming Degree Days and Cooling Degree Days
+Using lower threshold of 3c and upper threshold of 30c (to start with, can tune these later.)
+warming day value = 
+                    if (tmax>=upper & tmin<= lower){= ((upper+lower)/2)-lower}
+                    else if (tmax>=upper){= ((upper+tmin)/2)-lower}
+                    else if (tmin<=lower){= ((tmax+lower)/2)-lower}
+                    else{= temp-lower}
+
+Using an upper threshold of 3c and a lower threshold of -18c (to start with, can tune these later.)
+cooling day value = 
+                    if (tmax>=upper & tmin<= lower){= ((upper+lower)/2)+upper}
+                    else if (tmax>=upper){= ((upper+tmin)/2)+upper}
+                    else if (tmin<=lower){= ((tmax+lower)/2)+upper}
+                    else{= temp-lower}
+```{r}
+#function to calculate warming degree day value (WDD) from tmax and tmin, given an upper and lower bound
+get_WDD <- function(tmax, tmin, temp, upper=30, lower=3){
+  WDD_value <- 0
+  if (tmax>=upper && tmin<= lower){WDD_value = ((upper+lower)/2)-lower}
+  else if (tmax>=upper){WDD_value = ((upper+tmin)/2)-lower}
+  else if (tmin<=lower){WDD_value = ((tmax+lower)/2)-lower}
+  else{WDD_value = temp-lower}
+}
+
+#function to calculate cooling degree day value (WDD) from tmax and tmin, given an upper and lower bound
+get_CDD <- function(tmax, tmin, temp, upper=3, lower=-18){
+  CDD_value <- 0
+  if (tmax>=upper && tmin<= lower){CDD_value = ((upper+lower)/2)+upper}
+  else if (tmax>=upper){CDD_value = ((upper+tmin)/2)+upper}
+  else if (tmin<=lower){CDD_value = ((tmax+lower)/2)+upper}
+  else{CDD_value = temp-lower}
+}
+
+#function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
+#add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
+#  data <- data %>% 
+#    mutate(WDD <- get_WDD(.$tmax, .$tmin, warming_upper, warming_lower))
+#}
+
+#function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
+#add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
+#  data <- data %>% 
+#    mutate(WDD = map(data, get_WDD(tmax, tmin, temp, warming_upper, warming_lower))) #%>%
+#    unnest(WDD) %>%
+#    ungroup()
+#}
+
+#function to add Warming Degree Days (WDD) and Cooling Degree Days (CDD) to the temperature data
+#it's a fuck ass loop, this prolly isn't sigma big-O or whatever but I couldn't get map() to work
+add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upper=3, cooling_lower=-18){
+  counter <- 1
+  WDD <- vector(mode="double", length=length(data$temp))
+  CDD <- vector(mode="double", length=length(data$temp))
+  while(counter<=length(data$temp)){
+    WDD[counter] <- get_WDD(data$tmax[counter], data$tmin[counter], data$temp[counter], warming_upper, warming_lower)
+    CDD[counter] <- get_CDD(data$tmax[counter], data$tmin[counter], data$temp[counter], cooling_upper, cooling_lower)
+    counter <- counter+1
+  }
+  data$WDD <- WDD
+  data$CDD <- CDD
+  data
+}
+
+
+all_temps <- all_temps %>% add_degree_days()
+```
+
+#Calculate each year's cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
+For cooling degree days, need to go back to the previous year's winter most likely - might be a pain to calculate.
+```{r}
+
+allign_dates2 <- function(blooms, temps){
+  minYear <- max(c(min(blooms$year), min(temps$year)))
+  maxYear <- min(c(max(blooms$year), max(temps$year)))
+
+  #trim each to length
+  blooms <- blooms %>% filter(year > minYear & year <= maxYear)
+  temps <- temps %>% filter(year > minYear & year <= maxYear)
+  
+  
+  #join the tables
+  data <- 
+  temps %>% 
+  group_by(year) %>% 
+  nest() %>% 
+  left_join(blooms)
+  
+  #re-organize for redability
+  data <- data[,c(3,4,5,6,1,7,8,2)]
+}
+
+all_data <- allign_dates2(cherry, all_temps)
+all_data <- all_data %>% arrange(location, year)
+
+#function to get a year's initial warming date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
+doy_initial_warming <- function(roll_temp, doy_max = 100, warming_lower=3) {
+  dof <- which(roll_temp[1:doy_max] >= warming_lower)
+  if(length(dof) == 0) 1 else min(dof)
+}
+
+#Function to get a year's cumulative WDD between it's initial warming date & it's bloom date
+get_warming <- function(data){
+  data <- data %>%
+    mutate(warming = map(data, ~ sum(pmax(.$WDD, 0, na.rm = TRUE)[(doy_initial_warming(.$roll_temp)):bloom_doy]))) %>% 
+    unnest(warming) %>% 
+    ungroup() 
+}
+
+all_data <- get_warming(all_data)
+
+
+#function to get a year's initial cooling date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
+doy_initial_warming <- function(roll_temp, doy_max = 100, warming_lower=3) {
+  dof <- which(roll_temp[1:doy_max] >= warming_lower)
+  if(length(dof) == 0) 1 else min(dof)
+}
+
+```
+
+
+#Make historical predictions based on cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
+```{r}
+#function to predict bloom doy using warming degree days
+doy_prediction_warming <- function(roll_temp, WDD, warming, adjustment=1.5) {
+  (doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > warming) )*adjustment
+}
+
+#function to predict a year's bloom date, in DOY, using Warming Degree Day method
+predict_warming <- function(data){
+  mean_warming <- mean(data$warming)
+  data <- data %>%
+  mutate(pred_bloom_doy_warming = map(data, ~ doy_prediction_warming(.$WDD, .$tmax, mean_warming, adjustment=2.1))) %>% 
+  unnest(pred_bloom_doy_warming) %>% 
+  ungroup()
+}
+
+warming_predictions <- predict_warming(all_data)
+```
+
+#Adjustment=1.5 mae/rmse in order of location & rough interpretation of graph:
+33-37 early~40, 34-38 early~, 43-43 ?, 47-49 early~?, 31-35 early~25-30
+
+#Adjustment=1.0 mae/rmse in order of location & rough interpretation of graph:
+52-55, 53-55, 58-58, 61-62, 61-62, 48-50 #worse every time, will increase adjustment
+
+#Adjustment=2.0 mae/rmse in order of location & rough interpretation of graph:
+25-32 centered slightly positive but wider, 
+25-33 centered slightly positive but wider,
+28-28 not enough data, 33-36 not enough data,
+25-35 centered slightly positive but wider.
+
+#Adjustment=2.5 mae/rmse in order of location & rough interpretation of graph: (best result for NY so far)
+31-44 centered slightly negative but wider, 
+31-45 centered negative and wider,
+13-13 not enough data, 19-26 not enough data,
+33-50 centered negative and wider.
+
+#Adjustment=1.8 mae/rmse in order of location & rough interpretation of graph:
+27-32 centered slightly pos but wider, 
+26-33 centered slightly pos but wider,
+34-34 not enough data, 39-41 not enough data,
+26-33 centered slightly pos but wider.
+
+#Adjustment=1.9 mae/rmse in order of location & rough interpretation of graph:
+26-32 centered slightly pos but wider
+(just going to tune for kyoto, others don't seem lile they'll beat quetelet's w/out serious overhaul.)
+
+#Adjustment=2.1 mae/rmse in order of location & rough interpretation of graph:
+25-34 centered slightly pos but wider, 
+
+#There's probably some function to automatically tune the best value of Adjustment parameter... food for future work
+Best values are 2.0 for kyoto, 2.0 for Liestal, 2.5 for NY, 2.5 for Vancouver, and 1.5 for WashingtonDC
+
+#Evaluate Model
+```{r}
+#TODO
+#been evaluating & tuning hyperparams by eye/vibes so far, should do something more formal... maybe next year!
+
+warming_evaluate <- function(Wdata){
+  Wdata %>%
+    summarize(mae  = mean(abs(bloom_doy - pred_bloom_doy_warming)),
+            rmse = sqrt(mean((bloom_doy - pred_bloom_doy_warming)^2))) %>%
+  kable(dig = 0,
+        align = "c",
+        col.names = c("mean absolute error (days)", "root mean squared error (days)"),
+        caption = "Accuracy of predictions using Warming method:") %>%
+  kable_styling()
+}
+
+warming_kyoto <- warming_predictions %>% filter(location=="kyoto")
+warming_liestal <- warming_predictions %>% filter(location=="liestal")
+warming_newyorkcity <- warming_predictions %>% filter(location=="newyorkcity")
+warming_vancouver <- warming_predictions %>% filter(location=="vancouver")
+warming_washingtondc <- warming_predictions %>% filter(location=="washingtondc")
+
+warming_evaluate(warming_kyoto)
+warming_evaluate(warming_liestal)
+warming_evaluate(warming_newyorkcity)
+warming_evaluate(warming_vancouver)
+warming_evaluate(warming_washingtondc)
+
+#graphs of actual-predicted
+#positive means predicted early, megative means predicted late
+
+plot(x=warming_kyoto$year, y=(warming_kyoto$bloom_doy - warming_kyoto$pred_bloom_doy_warming))
+#generally predicts early for kyoto
+
+plot(x=warming_liestal$year, y=(warming_liestal$bloom_doy - warming_liestal$pred_bloom_doy_warming))
+#generally predicts early for liestal
+
+plot(x=warming_newyorkcity$year, y=(warming_newyorkcity$bloom_doy - warming_newyorkcity$pred_bloom_doy_warming))
+#not enough data for NYC
+
+plot(x=warming_vancouver$year, y=(warming_vancouver$bloom_doy - warming_vancouver$pred_bloom_doy_warming))
+#not enough data for vancouver
+
+plot(x=warming_washingtondc$year, y=(warming_washingtondc$bloom_doy - warming_washingtondc$pred_bloom_doy_warming))
+#generally predicts early for DC
+```
+
+
+#Make this year's predictions based on cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
+```{r}
+#first, need to get warming values for each location
+#function to get mean warming value for location
+get_mean_warming <- function(data, loc){
+  warming_loc_data <- data %>% filter(location==loc)
+  mean_warming <- mean(warming_loc_data$warming)
+}
+
+#next, need to format accuweather data for warming
+#get this year's predictions from accuweather
+AccuWeather2026_warming <- read.csv("data/accuweather_forecast_2026.csv")
+AccuWeather2026_warming <- AccuWeather2026_warming %>% get_rolling_avgs()
+AccuWeather2026_warming <- AccuWeather2026_warming %>% arrange(location, year)
+AccuWeather2026_warming <- AccuWeather2026_warming %>% add_degree_days()
+AccuWeather2026_warming <- AccuWeather2026_warming %>% mutate(location = recode(location,
+                         'washington' = 'washingtondc',
+                         'newyork' = 'newyorkcity'))
+
+
+#fuction to make predictions on bloom doy for 2026
+#data== all_data, loc=="kyoto","liestal","newyorkcity","vancouver",or"washingtondc"
+doy26_prediction_warming <- function(data, loc, AccuWeather, adjustment=1.5) {
+  mean_warming <- get_mean_warming(data, loc)
+  AccuWeather_loc <- AccuWeather %>% filter(location==loc)
+  roll_temp <- AccuWeather_loc$roll_temp
+  WDD <- AccuWeather_loc$WDD
+  doy <- (doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > mean_warming) )*adjustment
+}
+
+
+
+#Best values for Adjustment are: 2.0 for kyoto, 2.0 Liestal, 2.5 for NY, 2.5 for Vancouver, and 1.5 for WashingtonDC
+
+doy26_pred_warming_kyoto <- doy26_prediction_warming(all_data, "kyoto", AccuWeather2026_warming, adjustment=2.0)
+day26_pred_warming_kyoto <- as.Date(doy26_pred_warming_kyoto, origin = "2026-01-01")
+
+doy26_pred_warming_liestal <- doy26_prediction_warming(all_data, "liestal", AccuWeather2026_warming, adjustment=2.0)
+day26_pred_warming_liestal <- as.Date(doy26_pred_warming_liestal, origin = "2026-01-01")
+
+doy26_pred_warming_newyorkcity <- round(doy26_prediction_warming(all_data, "newyorkcity", AccuWeather2026_warming, adjustment=mean(c(2,2,1.5))))
+day26_pred_warming_newyorkcity <- as.Date(doy26_pred_warming_newyorkcity, origin = "2026-01-01")
+
+doy26_pred_warming_vancouver <- doy26_prediction_warming(all_data, "vancouver", AccuWeather2026_warming, adjustment=mean(c(2,2,1.5)))
+day26_pred_warming_vancouver <- as.Date(doy26_pred_warming_vancouver, origin = "2026-01-01")
+
+doy26_pred_warming_washingtondc <- round(doy26_prediction_warming(all_data, "washingtondc", AccuWeather2026_warming, adjustment=1.5))
+day26_pred_warming_washingtondc <- as.Date(doy26_pred_warming_washingtondc, origin = "2026-01-01")
+
+
+mean_warming_dc <- get_mean_warming(all_data, "washingtondc")
+AccuWeather26_dc <- AccuWeather2026_warming %>% filter(location=="washingtondc")
+roll_temp_dc <- AccuWeather26_dc$roll_temp
+WDD_dc <- AccuWeather26_dc$WDD
+```
+
+
+#Compile all data for analysis
+```{r}
+#2026 predictions
+location <- c("kyoto","liestal","newyorkcity","vancouver","washingtondc")
+
+pred_bloom_doy_quetelet <- c(bloom_doy_2026_kyoto, bloom_doy_2026_liestal, bloom_doy_2026_newyorkcity, bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc)
+
+pred_bloom_date_quetelet <- c(bloom_date_2026_kyoto, bloom_date_2026_liestal, bloom_date_2026_newyorkcity, bloom_date_2026_vancouver, bloom_date_2026_washingtondc)
+
+pred_bloom_doy_warming <- c(doy26_pred_warming_kyoto, doy26_pred_warming_liestal, doy26_pred_warming_newyorkcity, doy26_pred_warming_vancouver, doy26_pred_warming_washingtondc)
+
+pred_bloom_day_warming <- c(day26_pred_warming_kyoto, day26_pred_warming_liestal, day26_pred_warming_newyorkcity, day26_pred_warming_vancouver, day26_pred_warming_washingtondc)
+
+Predictions_2026 <- data.frame(
+  Location = Location <- location,
+  Quetelet_Pred_Bloom_Doy = quetelet_pred_bloom_doy <- pred_bloom_doy_quetelet,
+  Quetelet_Pred_Bloom_Day = quetelet_pred_bloom_date <- pred_bloom_date_quetelet,
+  Warming_Pred_Bloom_Doy = warming_pred_bloom_doy <- pred_bloom_doy_warming,
+  Warming_Pred_Bloom_Day = warming_pred_bloom_day <- pred_bloom_day_warming
+)
+
+#Comparing the MAE & RMSE of the 2 models:
+#Toss up between MAE & RMSE (26-28 for quetelet vs 25-32 for warming) average the 2
+#Quetelet's predicts Liestal better
+#not enough data for NYC for either, average the prediction
+#Quetelet's predicts Vancouver better
+#Quetelet's predicts Washington, DC better
+
+
+Predictions_2026 <- data.frame(
+  Location = Location <- location,
+  Quetelet_Pred_Bloom_Doy = quetelet_pred_bloom_doy <- pred_bloom_doy_quetelet,
+  Quetelet_Pred_Bloom_Day = quetelet_pred_bloom_date <- pred_bloom_date_quetelet,
+  Warming_Pred_Bloom_Doy = warming_pred_bloom_doy <- pred_bloom_doy_warming,
+  Warming_Pred_Bloom_Day = warming_pred_bloom_day <- pred_bloom_day_warming,
+  Final_Pred_Bloom_Doy = c(round(mean(c(bloom_doy_2026_kyoto, doy26_pred_warming_kyoto))), bloom_doy_2026_liestal, round(mean(c(bloom_doy_2026_newyorkcity, doy26_pred_warming_newyorkcity))), bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc),
+  Final_Pred_Bloom_Date = c(round(mean(c(bloom_date_2026_kyoto, day26_pred_warming_kyoto))), bloom_date_2026_liestal, round(mean(c(bloom_date_2026_newyorkcity, day26_pred_warming_newyorkcity))), bloom_date_2026_vancouver, bloom_date_2026_washingtondc)
+)
+
+#Final_Pred_Bloom_Doy <- c(doy26_pred_warming_kyoto, bloom_doy_2026_liestal, round(mean(c(bloom_doy_2026_newyorkcity, doy26_pred_warming_newyorkcity))), bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc)
+
+#Final_Pred_Bloom_Date <- c(day26_pred_warming_kyoto, bloom_date_2026_liestal, round(mean(c(bloom_date_2026_newyorkcity, day26_pred_warming_newyorkcity))), bloom_date_2026_vancouver, bloom_date_2026_washingtondc)
+
+```
+
+
+
+#Use law/cumulative temperature, cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time) in a random forrest or XGBoost to get the best of all 3 models
+```{r}
+#Ran out of time to try this, could be interesting for future exploration though!
+```
+
