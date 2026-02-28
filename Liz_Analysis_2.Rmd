@@ -274,80 +274,12 @@ bloom_date_2026_vancouver <- as.Date(bloom_doy_2026_vancouver, origin = "2026-01
 
 bloom_doy_2026_newyorkcity <- predict_2026_quetelet("newyorkcity")
 bloom_date_2026_newyorkcity <- as.Date(bloom_doy_2026_newyorkcity, origin = "2026-01-01")
+#Not enough data to make a prediction using quetelet's for NYC, so we'll average all the other bloom doys to make a rough estimate. #TODO: something better than this
+bloom_doy_2026_newyorkcity <- round(mean(c(bloom_doy_2026_washingtondc, bloom_doy_2026_liestal, bloom_doy_2026_kyoto, bloom_doy_2026_vancouver)))
+bloom_date_2026_newyorkcity <- as.Date(bloom_doy_2026_newyorkcity, origin = "2026-01-01")
 ```
 
 -----------------------
-
-#Functions for GDD/MGDD method
-Similar to Quetelet's method, Growing Degree Days (GDDs) and Modified Growing Degree Days (MGDDs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
-
-Growing degree days are calculated for each day as: ((tmax-tmin)/2)-base.
-Base is a threshold temperature below which a plant does not develop. It is a mechanistic value, need to consult research to determine a base temp for cherry blossoms. 
-In agricultural applications, 10c is a common base temperature for Corn, Soybeans, Tomatoes, Turfgrass, 4.4c is a common base temperature for Wheat, Alfalfa, many insects, and 0c is a common base for specific perennial crops.
-
-Growing degree days are calculated for each day as: (((tmax<=upper_bound)-(tmin>=base))/2)-base.
-Modified growing degree days are calculated similarly to standard GDDs, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, and the lower threshold is commonly the base value.
-
-Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
-
-Similar to Growing Degree Days/Modified Growing Degree Days, Winter Chill Days (WCDs) and Chill Portions (CPs) are a cumulative sum of some time-temperature quantity that predict a plant's bloom date.
-
-Winter Chill Days are calculated for each day as: base-(tmax-tmin).
-Base is a threshold temperature above which a plant does not do winter dormancy. It is a mechanistic value, need to consult research to determine a base temp for cherry blossoms.
-
-Winter Portions are calculated for each day as: base - ((tmax<=upper_bound)-(tmin>=base))/2
-(((tmax<=upper_bound)-(tmin>=base))/2)-base.
-Winter Portions are calculated similarly to standard WCD, except the daily tmax and tmin temperatures are adjusted based on some maximum & minimum thresholds. The upper threshold is also mechanistic, (commonly 7c or 12c) and the lower threshold is commonly the base value.
-
-Similarly to Quetelet's method, there is some required amount of cumulative GDDs/MGDDs for a plant to bloom. 
-```{r}
-#Do regular GDDs first (need to determine best base value)
-#then MGDDs if time permits (need to determine best upper & lower bounds)
-
-#Function to get start of GDD period, in DOY (from first day GDD is positive)
-doy_first_GDD <- function(temp, base_temp = 0, doy_max = 100) {
-  #gets list of days where GDD is positive
-  GDDs <- which(((temp[1:doy_max])-base_temp) > 0)
-  #gets first day where GDD is positive
-  if(length(GDDs) == 0) 1 else min(GDDs)
-}
-
-
-#Function to predict a year's bloom date, in DOY
-doy_prediction_GDD <- function(temp, tmax, law)
-  doy_last_frost(tmax) + which.max(cumsum(pmax(temp[(doy_last_frost(tmax) + 1):365], 0, na.rm = TRUE)^2) > law)
-
-
-#function to calculate the GDD_score for a dataset
-  #GDD_score = cumulative GDD values from first day of year where GDD is positive
-get_GDD_score <- function(data, base_temp = 0){
-  data <- data %>%
-    mutate(GDD_score = map(data, ~ sum(pmax(((.$temp)-base_temp), 0, na.rm = TRUE)[(doy_first_GDD(.$temp) + 1):bloom_doy]))) %>% 
-    unnest(GDD_score) %>% 
-    ungroup() 
-}
-
-#function to predict a year's bloom date, in DOY, using GDD method
-predict_GDD <- function(data){
-  mean_GDD_score <- mean(data$GDD_score)
-  data <- data %>%
-  mutate(pred_bloom_doy_GDD = map(data, ~ doy_prediction_GDD(.$temp, .$tmax, mean_GDD_score))) %>% 
-  unnest(pred_bloom_doy_GDD) %>% 
-  ungroup()
-}
-
-
-#AIO function call for GDD method (counting GDDs from first positive GDD, using base_temp of 0c)
-GDD_method <- function(data){
-  data <- get_GDD_score(data)
-  data <- predict_GDD(data)
-}
-
-
-GDD_washingtondc <- GDD_method(data_washingtondc)
-
-```
-
 #Functions for GDD/MGDD method attempt 2
 In testing above, results were worse than Quetelet's method. Let's try a different approach.
 
@@ -402,11 +334,6 @@ TODO: tidy up, implement as function to choose rolling days amount (try values b
 ```{r}
 #install.packages("zoo")
 library(zoo)
-all_temps2 <- all_temps %>%
-  group_by(location) %>%
-  arrange(date) %>%
-  mutate(roll_temp = rollmean(temp, k = 7, fill = NA, align = "right")) %>%
-  ungroup()
 
 #function to add rolling temp averages to temp data
 get_rolling_avgs <- function(data, k=7){
@@ -484,13 +411,12 @@ add_degree_days <- function(data, warming_upper=30, warming_lower=3, cooling_upp
 }
 
 
-all_DDs <- all_temps2 %>% add_degree_days()
+all_temps <- all_temps %>% add_degree_days()
 ```
 
-#Calculate each year's cumulative Warming Degree Days and cumulative Cooling Degree Days
+#Calculate each year's cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
 For cooling degree days, need to go back to the previous year's winter most likely - might be a pain to calculate.
 ```{r}
-#TODO: fix/make different allign_dates that preserves bloom dates & bloom doys
 
 allign_dates2 <- function(blooms, temps){
   minYear <- max(c(min(blooms$year), min(temps$year)))
@@ -512,7 +438,7 @@ allign_dates2 <- function(blooms, temps){
   data <- data[,c(3,4,5,6,1,7,8,2)]
 }
 
-all_data <- allign_dates2(cherry, all_DDs)
+all_data <- allign_dates2(cherry, all_temps)
 all_data <- all_data %>% arrange(location, year)
 
 #function to get a year's initial warming date (the first day in which the rolling average temperature over 5-10 days is above (at or above?) warming_lower bound, default to 3c.
@@ -541,11 +467,11 @@ doy_initial_warming <- function(roll_temp, doy_max = 100, warming_lower=3) {
 ```
 
 
-#Predict based on cumulative Warming Degree Days and cumulative Cooling Degree Days
+#Make historical predictions based on cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
 ```{r}
 #function to predict bloom doy using warming degree days
-doy_prediction_warming <- function(roll_temp, WDD, warming) {
-  doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > warming)
+doy_prediction_warming <- function(roll_temp, WDD, warming, adjustment=1.5) {
+  (doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > warming) )*adjustment
 }
 
 #function to predict a year's bloom date, in DOY, using Warming Degree Day method
@@ -559,6 +485,65 @@ predict_warming <- function(data){
 
 warming_predictions <- predict_warming(all_data)
 ```
+
+#Make this year's predictions based on cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
+```{r}
+#first, need to get warming values for each location
+#function to get mean warming value for location
+get_mean_warming <- function(data, loc){
+  warming_loc_data <- data %>% filter(location==loc)
+  mean_warming <- mean(warming_loc_data$warming)
+}
+
+#next, need to format accuweather data for warming
+#get this year's predictions from accuweather
+AccuWeather2026_warming <- read.csv("data/accuweather_forecast_2026.csv")
+AccuWeather2026_warming <- AccuWeather2026_warming %>% get_rolling_avgs()
+AccuWeather2026_warming <- AccuWeather2026_warming %>% arrange(location, year)
+AccuWeather2026_warming <- AccuWeather2026_warming %>% add_degree_days()
+AccuWeather2026_warming <- AccuWeather2026_warming %>% mutate(location = recode(location,
+                         'washington' = 'washingtondc',
+                         'newyork' = 'newyorkcity'))
+
+
+#fuction to make predictions on bloom doy for 2026
+#data== all_data, loc=="kyoto","liestal","newyorkcity","vancouver",or"washingtondc"
+doy26_prediction_warming <- function(data, loc, AccuWeather, adjustment=1.5) {
+  mean_warming <- get_mean_warming(data, loc)
+  AccuWeather_loc <- AccuWeather %>% filter(location==loc)
+  roll_temp <- AccuWeather_loc$roll_temp
+  WDD <- AccuWeather_loc$WDD
+  doy <- (doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > mean_warming) )*adjustment
+}
+
+doy26_pred_warming_kyoto <- doy26_prediction_warming(all_data, "kyoto", AccuWeather2026_warming)
+doy26_pred_warming_liestal <- doy26_prediction_warming(all_data, "liestal", AccuWeather2026_warming)
+doy26_pred_warming_newyorkcity <- doy26_prediction_warming(all_data, "newyorkcity", AccuWeather2026_warming)
+doy26_pred_warming_vancouver <- doy26_prediction_warming(all_data, "vancouver", AccuWeather2026_warming)
+doy26_pred_warming_washingtondc <- doy26_prediction_warming(all_data, "washingtondc", AccuWeather2026_warming)
+
+
+mean_warming_dc <- get_mean_warming(all_data, "washingtondc")
+AccuWeather26_dc <- AccuWeather2026_warming %>% filter(location=="washingtondc")
+roll_temp_dc <- AccuWeather26_dc$roll_temp
+WDD_dc <- AccuWeather26_dc$WDD
+```
+
+
+#Compile all data for analysis
+```{r}
+#2026 predictions
+location <- c("kyoto","liestal","newyorkcity","vancouver","washingtondc")
+pred_bloom_doy_quetelet <- c(bloom_doy_2026_kyoto, bloom_doy_2026_liestal, bloom_doy_2026_newyorkcity, bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc)
+pred_bloom_doy_warming <- c(doy26_pred_warming_kyoto, doy26_pred_warming_liestal, doy26_pred_warming_newyorkcity, doy26_pred_warming_vancouver, doy26_pred_warming_washingtondc)
+
+Predictions_2026 <- data.frame(
+  Location <- location,
+  quetelet_pred_bloom_doy <- pred_bloom_doy_quetelet,
+  warming_pred_bloom_doy <- pred_bloom_doy_warming
+)
+```
+
 
 #Use law/cumulative temperature, cumulative Warming Degree Days and cumulative Cooling Degree Days in a random forrest or XGBoost to get the best of all 3 models
 ```{r}
