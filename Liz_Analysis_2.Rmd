@@ -1,13 +1,25 @@
 ---
 title: "Liz_Analysis_2"
 author: "Liz Conley"
-date: "2026-02-24"
+date: "2026-02-28"
 output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+#NOTE: Sys.Date() is used for a lot of the data collection. All work and analysis was finalized on 2/28/26, at approx. 6pm. When testing/evaluating, make sure to use "2026-02-28" instead of Sys.Date().
+
+#TL:DR: Final predictions are in the Predictions_2026 dataframe, in the Pred_Final_Bloom_Doy and Pred_Final_Bloom_Date columns. In case something from NOAA or AccuWeather has changed and makes this file un-runnable, I've also hard-code them into a data frame below.
+```{r}
+Final_Predictions_HardCoded <- data.frame(
+  Location = Location <- c("kyoto","liestal","newyorkcity","vancouver","washingtondc"),
+  Pred_Final_Bloom_Doy = Pred_Final_Bloom_Doy <- c(124,91,135,79,96),
+  Pred_Final_Bloom_Date = Pred_Final_Bloom_Date <- c(as.Date(124, origin = "2026-01-01"),as.Date(91, origin = "2026-01-01"),as.Date(135, origin = "2026-01-01"),as.Date(79, origin = "2026-01-01"),as.Date(96, origin = "2026-01-01"))
+)
+```
+
 
 #Load the required libraries
 ```{r}
