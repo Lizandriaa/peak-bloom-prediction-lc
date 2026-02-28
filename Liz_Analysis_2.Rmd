@@ -220,11 +220,34 @@ quetelet_method <- function(data){
 
 #Make historical predictions (training data) using quetelet's method
 ```{r}
-quetelet_washingtondc <- quetelet_method(data_washingtondc)
-quetelet_liestal <- quetelet_method(data_liestal)
 quetelet_kyoto <- quetelet_method(data_kyoto)
-quetelet_vancouver <- quetelet_method(data_vancouver)
+quetelet_liestal <- quetelet_method(data_liestal)
 quetelet_newyorkcity <- quetelet_method(data_newyorkcity)
+quetelet_vancouver <- quetelet_method(data_vancouver)
+quetelet_washingtondc <- quetelet_method(data_washingtondc)
+```
+
+#Evaluate quetelet's method model
+```{r}
+#TODO
+#been evaluating & tuning hyperparams by eye/vibes so far, should do something more formal... maybe next year!
+
+quetelet_evaluate <- function(Qdata){
+  Qdata %>%
+    summarize(mae  = mean(abs(bloom_doy - pred_bloom_doy_quetelet)),
+            rmse = sqrt(mean((bloom_doy - pred_bloom_doy_quetelet)^2))) %>%
+  kable(dig = 0,
+        align = "c",
+        col.names = c("mean absolute error (days)", "root mean squared error (days)"),
+        caption = "Accuracy of predictions using Quetelet's method:") %>%
+  kable_styling()
+}
+
+quetelet_evaluate(quetelet_kyoto)
+quetelet_evaluate(quetelet_liestal)
+quetelet_evaluate(quetelet_newyorkcity)
+quetelet_evaluate(quetelet_vancouver)
+quetelet_evaluate(quetelet_washingtondc)
 ```
 
 #Make this year's prediction using quetelet's method
@@ -478,13 +501,95 @@ doy_prediction_warming <- function(roll_temp, WDD, warming, adjustment=1.5) {
 predict_warming <- function(data){
   mean_warming <- mean(data$warming)
   data <- data %>%
-  mutate(pred_bloom_doy_warming = map(data, ~ doy_prediction_warming(.$WDD, .$tmax, mean_warming))) %>% 
+  mutate(pred_bloom_doy_warming = map(data, ~ doy_prediction_warming(.$WDD, .$tmax, mean_warming, adjustment=2.1))) %>% 
   unnest(pred_bloom_doy_warming) %>% 
   ungroup()
 }
 
 warming_predictions <- predict_warming(all_data)
 ```
+
+#Adjustment=1.5 mae/rmse in order of location & rough interpretation of graph:
+33-37 early~40, 34-38 early~, 43-43 ?, 47-49 early~?, 31-35 early~25-30
+
+#Adjustment=1.0 mae/rmse in order of location & rough interpretation of graph:
+52-55, 53-55, 58-58, 61-62, 61-62, 48-50 #worse every time, will increase adjustment
+
+#Adjustment=2.0 mae/rmse in order of location & rough interpretation of graph:
+25-32 centered slightly positive but wider, 
+25-33 centered slightly positive but wider,
+28-28 not enough data, 33-36 not enough data,
+25-35 centered slightly positive but wider.
+
+#Adjustment=2.5 mae/rmse in order of location & rough interpretation of graph: (best result for NY so far)
+31-44 centered slightly negative but wider, 
+31-45 centered negative and wider,
+13-13 not enough data, 19-26 not enough data,
+33-50 centered negative and wider.
+
+#Adjustment=1.8 mae/rmse in order of location & rough interpretation of graph:
+27-32 centered slightly pos but wider, 
+26-33 centered slightly pos but wider,
+34-34 not enough data, 39-41 not enough data,
+26-33 centered slightly pos but wider.
+
+#Adjustment=1.9 mae/rmse in order of location & rough interpretation of graph:
+26-32 centered slightly pos but wider
+(just going to tune for kyoto, others don't seem lile they'll beat quetelet's w/out serious overhaul.)
+
+#Adjustment=2.1 mae/rmse in order of location & rough interpretation of graph:
+25-34 centered slightly pos but wider, 
+
+#There's probably some function to automatically tune the best value of Adjustment parameter... food for future work
+Best values are 2.0 for kyoto, 2.0 for Liestal, 2.5 for NY, 2.5 for Vancouver, and 1.5 for WashingtonDC
+
+#Evaluate Model
+```{r}
+#TODO
+#been evaluating & tuning hyperparams by eye/vibes so far, should do something more formal... maybe next year!
+
+warming_evaluate <- function(Wdata){
+  Wdata %>%
+    summarize(mae  = mean(abs(bloom_doy - pred_bloom_doy_warming)),
+            rmse = sqrt(mean((bloom_doy - pred_bloom_doy_warming)^2))) %>%
+  kable(dig = 0,
+        align = "c",
+        col.names = c("mean absolute error (days)", "root mean squared error (days)"),
+        caption = "Accuracy of predictions using Warming method:") %>%
+  kable_styling()
+}
+
+warming_kyoto <- warming_predictions %>% filter(location=="kyoto")
+warming_liestal <- warming_predictions %>% filter(location=="liestal")
+warming_newyorkcity <- warming_predictions %>% filter(location=="newyorkcity")
+warming_vancouver <- warming_predictions %>% filter(location=="vancouver")
+warming_washingtondc <- warming_predictions %>% filter(location=="washingtondc")
+
+warming_evaluate(warming_kyoto)
+warming_evaluate(warming_liestal)
+warming_evaluate(warming_newyorkcity)
+warming_evaluate(warming_vancouver)
+warming_evaluate(warming_washingtondc)
+
+#graphs of actual-predicted
+#positive means predicted early, megative means predicted late
+
+plot(x=warming_kyoto$year, y=(warming_kyoto$bloom_doy - warming_kyoto$pred_bloom_doy_warming))
+#generally predicts early for kyoto
+
+plot(x=warming_liestal$year, y=(warming_liestal$bloom_doy - warming_liestal$pred_bloom_doy_warming))
+#generally predicts early for liestal
+
+plot(x=warming_newyorkcity$year, y=(warming_newyorkcity$bloom_doy - warming_newyorkcity$pred_bloom_doy_warming))
+#not enough data for NYC
+
+plot(x=warming_vancouver$year, y=(warming_vancouver$bloom_doy - warming_vancouver$pred_bloom_doy_warming))
+#not enough data for vancouver
+
+plot(x=warming_washingtondc$year, y=(warming_washingtondc$bloom_doy - warming_washingtondc$pred_bloom_doy_warming))
+#generally predicts early for DC
+```
+
 
 #Make this year's predictions based on cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time)
 ```{r}
@@ -516,11 +621,24 @@ doy26_prediction_warming <- function(data, loc, AccuWeather, adjustment=1.5) {
   doy <- (doy_initial_warming(roll_temp) + which.max(cumsum(pmax(WDD[(doy_initial_warming(roll_temp) + 1):365], 0, na.rm = TRUE)) > mean_warming) )*adjustment
 }
 
-doy26_pred_warming_kyoto <- doy26_prediction_warming(all_data, "kyoto", AccuWeather2026_warming)
-doy26_pred_warming_liestal <- doy26_prediction_warming(all_data, "liestal", AccuWeather2026_warming)
-doy26_pred_warming_newyorkcity <- doy26_prediction_warming(all_data, "newyorkcity", AccuWeather2026_warming)
-doy26_pred_warming_vancouver <- doy26_prediction_warming(all_data, "vancouver", AccuWeather2026_warming)
-doy26_pred_warming_washingtondc <- doy26_prediction_warming(all_data, "washingtondc", AccuWeather2026_warming)
+
+
+#Best values for Adjustment are: 2.0 for kyoto, 2.0 Liestal, 2.5 for NY, 2.5 for Vancouver, and 1.5 for WashingtonDC
+
+doy26_pred_warming_kyoto <- doy26_prediction_warming(all_data, "kyoto", AccuWeather2026_warming, adjustment=2.0)
+day26_pred_warming_kyoto <- as.Date(doy26_pred_warming_kyoto, origin = "2026-01-01")
+
+doy26_pred_warming_liestal <- doy26_prediction_warming(all_data, "liestal", AccuWeather2026_warming, adjustment=2.0)
+day26_pred_warming_liestal <- as.Date(doy26_pred_warming_liestal, origin = "2026-01-01")
+
+doy26_pred_warming_newyorkcity <- round(doy26_prediction_warming(all_data, "newyorkcity", AccuWeather2026_warming, adjustment=mean(c(2,2,1.5))))
+day26_pred_warming_newyorkcity <- as.Date(doy26_pred_warming_newyorkcity, origin = "2026-01-01")
+
+doy26_pred_warming_vancouver <- doy26_prediction_warming(all_data, "vancouver", AccuWeather2026_warming, adjustment=mean(c(2,2,1.5)))
+day26_pred_warming_vancouver <- as.Date(doy26_pred_warming_vancouver, origin = "2026-01-01")
+
+doy26_pred_warming_washingtondc <- round(doy26_prediction_warming(all_data, "washingtondc", AccuWeather2026_warming, adjustment=1.5))
+day26_pred_warming_washingtondc <- as.Date(doy26_pred_warming_washingtondc, origin = "2026-01-01")
 
 
 mean_warming_dc <- get_mean_warming(all_data, "washingtondc")
@@ -534,19 +652,51 @@ WDD_dc <- AccuWeather26_dc$WDD
 ```{r}
 #2026 predictions
 location <- c("kyoto","liestal","newyorkcity","vancouver","washingtondc")
+
 pred_bloom_doy_quetelet <- c(bloom_doy_2026_kyoto, bloom_doy_2026_liestal, bloom_doy_2026_newyorkcity, bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc)
+
+pred_bloom_date_quetelet <- c(bloom_date_2026_kyoto, bloom_date_2026_liestal, bloom_date_2026_newyorkcity, bloom_date_2026_vancouver, bloom_date_2026_washingtondc)
+
 pred_bloom_doy_warming <- c(doy26_pred_warming_kyoto, doy26_pred_warming_liestal, doy26_pred_warming_newyorkcity, doy26_pred_warming_vancouver, doy26_pred_warming_washingtondc)
 
+pred_bloom_day_warming <- c(day26_pred_warming_kyoto, day26_pred_warming_liestal, day26_pred_warming_newyorkcity, day26_pred_warming_vancouver, day26_pred_warming_washingtondc)
+
 Predictions_2026 <- data.frame(
-  Location <- location,
-  quetelet_pred_bloom_doy <- pred_bloom_doy_quetelet,
-  warming_pred_bloom_doy <- pred_bloom_doy_warming
+  Location = Location <- location,
+  Quetelet_Pred_Bloom_Doy = quetelet_pred_bloom_doy <- pred_bloom_doy_quetelet,
+  Quetelet_Pred_Bloom_Day = quetelet_pred_bloom_date <- pred_bloom_date_quetelet,
+  Warming_Pred_Bloom_Doy = warming_pred_bloom_doy <- pred_bloom_doy_warming,
+  Warming_Pred_Bloom_Day = warming_pred_bloom_day <- pred_bloom_day_warming
 )
+
+#Comparing the MAE & RMSE of the 2 models:
+#Toss up between MAE & RMSE (26-28 for quetelet vs 25-32 for warming) average the 2
+#Quetelet's predicts Liestal better
+#not enough data for NYC for either, average the prediction
+#Quetelet's predicts Vancouver better
+#Quetelet's predicts Washington, DC better
+
+
+Predictions_2026 <- data.frame(
+  Location = Location <- location,
+  Quetelet_Pred_Bloom_Doy = quetelet_pred_bloom_doy <- pred_bloom_doy_quetelet,
+  Quetelet_Pred_Bloom_Day = quetelet_pred_bloom_date <- pred_bloom_date_quetelet,
+  Warming_Pred_Bloom_Doy = warming_pred_bloom_doy <- pred_bloom_doy_warming,
+  Warming_Pred_Bloom_Day = warming_pred_bloom_day <- pred_bloom_day_warming,
+  Final_Pred_Bloom_Doy = c(round(mean(c(bloom_doy_2026_kyoto, doy26_pred_warming_kyoto))), bloom_doy_2026_liestal, round(mean(c(bloom_doy_2026_newyorkcity, doy26_pred_warming_newyorkcity))), bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc),
+  Final_Pred_Bloom_Date = c(round(mean(c(bloom_date_2026_kyoto, day26_pred_warming_kyoto))), bloom_date_2026_liestal, round(mean(c(bloom_date_2026_newyorkcity, day26_pred_warming_newyorkcity))), bloom_date_2026_vancouver, bloom_date_2026_washingtondc)
+)
+
+#Final_Pred_Bloom_Doy <- c(doy26_pred_warming_kyoto, bloom_doy_2026_liestal, round(mean(c(bloom_doy_2026_newyorkcity, doy26_pred_warming_newyorkcity))), bloom_doy_2026_vancouver, bloom_doy_2026_washingtondc)
+
+#Final_Pred_Bloom_Date <- c(day26_pred_warming_kyoto, bloom_date_2026_liestal, round(mean(c(bloom_date_2026_newyorkcity, day26_pred_warming_newyorkcity))), bloom_date_2026_vancouver, bloom_date_2026_washingtondc)
+
 ```
 
 
-#Use law/cumulative temperature, cumulative Warming Degree Days and cumulative Cooling Degree Days in a random forrest or XGBoost to get the best of all 3 models
-```{r}
 
+#Use law/cumulative temperature, cumulative Warming Degree Days (and cumulative Cooling Degree Days if there's time) in a random forrest or XGBoost to get the best of all 3 models
+```{r}
+#Ran out of time to try this, could be interesting for future exploration though!
 ```
 
